@@ -80,6 +80,8 @@
 # common foreign hubs. Customize to your geography.
 
 # location_filter:
+#   # false keeps missing/blank locations visible; true rejects them
+#   reject_missing: false
 #   # always_allow is checked BEFORE block — keep this list to your home region only
 #   always_allow:
 #     - "United States"   # (replace with your home region)
@@ -101,6 +103,27 @@
 #     - "Japan"
 #     - "Brazil"
 #     - "Australia"
+
+# -- Discovery review lanes (optional) --
+# Replaces the binary location drop with three auditable outcomes after a title
+# matches: likely, verify, or excluded. Only likely/verify enter pipeline.md;
+# every decision is appended to data/discovery-audit.tsv with reason codes.
+# Omit this block, or set enabled: false, to retain the legacy location filter.
+#
+# discovery_lanes:
+#   enabled: true
+#   eligible_country_keywords: ["United States", "USA", "US"]
+#   broad_title_keywords:
+#     - "Platform Engineer"
+#     - "Solutions Architect"
+#   ai_context_keywords:
+#     - "AI"
+#     - "ML"
+#     - "LLM"
+#     - "Agentic"
+#   ai_focused_companies:
+#     - "Example AI Company"
+#   onsite_keywords: ["On-site", "Onsite", "Hybrid", "in office"]
 
 # -- Country-eligibility filter (optional, opt-in, #2093) --
 # location_filter only reads the ATS provider's STRUCTURED location field

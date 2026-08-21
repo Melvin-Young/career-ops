@@ -4890,6 +4890,7 @@ try {
   const badContentFilterPath = join(tmp, 'bad-content-filter.yml');
   const deadByTitleKeywordPath = join(tmp, 'dead-by-title-keyword.yml');
   const badVisaFilterPath = join(tmp, 'bad-visa-filter.yml');
+  const badDiscoveryLanesPath = join(tmp, 'bad-discovery-lanes.yml');
 
   writeFileSync(validPath, `
 title_filter:
@@ -4975,6 +4976,19 @@ tracked_companies:
     careers_url: "https://jobs.lever.co/acme"
 `, 'utf-8');
 
+  writeFileSync(badDiscoveryLanesPath, `
+title_filter:
+  positive: ["AI"]
+location_filter:
+  reject_missing: "yes"
+discovery_lanes:
+  enabled: "yes"
+  broad_title_keywords: ["Platform Engineer", "   "]
+tracked_companies:
+  - name: "Acme"
+    careers_url: "https://jobs.lever.co/acme"
+`, 'utf-8');
+
   const validResult = run(NODE, ['validate-portals.mjs', '--file', validPath]);
   if (validResult !== null && validResult.includes('0 errors')) {
     pass('validate-portals accepts a minimal valid portals file');
@@ -5036,6 +5050,13 @@ tracked_companies:
     pass('validate-portals rejects invalid visa_filter (empty keyword / non-boolean require_mention)');
   } else {
     fail('validate-portals should reject invalid visa_filter');
+  }
+
+  const badDiscoveryLanesResult = run(NODE, ['validate-portals.mjs', '--file', badDiscoveryLanesPath]);
+  if (badDiscoveryLanesResult === null) {
+    pass('validate-portals rejects invalid discovery lane and missing-location settings');
+  } else {
+    fail('validate-portals should reject invalid discovery lane settings');
   }
 
   rmSync(tmp, { recursive: true, force: true });
@@ -6493,6 +6514,45 @@ try {
     formatPipelineOffer,
     formatScanHistoryRow,
   } = await import(pathToFileURL(join(ROOT, 'scan.mjs')).href);
+  const { formatLocation: formatAshbyLocation } = await import(pathToFileURL(join(ROOT, 'providers', 'ashby.mjs')).href);
+
+  const ashbyRemoteLocation = formatAshbyLocation({
+    location: 'San Francisco',
+    isRemote: true,
+    workplaceType: 'Remote',
+    secondaryLocations: [{
+      location: 'United States',
+      address: { postalAddress: { addressCountry: 'United States' } },
+    }],
+  });
+  const ashbyOnsiteLocation = formatAshbyLocation({
+    location: 'New York',
+    isRemote: false,
+    workplaceType: 'OnSite',
+  });
+  if (
+    ashbyRemoteLocation === 'Remote · San Francisco · United States' &&
+    ashbyOnsiteLocation === 'New York'
+  ) {
+    pass('Ashby location normalization preserves remote work arrangement without relabeling on-site roles');
+  } else {
+    fail(`Ashby location normalization drifted: remote=${JSON.stringify(ashbyRemoteLocation)}, onsite=${JSON.stringify(ashbyOnsiteLocation)}`);
+  }
+
+  const strictMissingLocationFilter = buildLocationFilter({
+    reject_missing: true,
+    allow: ['remote', 'home city'],
+  });
+  if (
+    strictMissingLocationFilter('', undefined, 'AI Engineer') === false &&
+    strictMissingLocationFilter(undefined, undefined, 'AI Engineer') === false &&
+    strictMissingLocationFilter('Remote', undefined, 'AI Engineer') === true &&
+    buildLocationFilter({ allow: ['remote'] })('', undefined, 'AI Engineer') === true
+  ) {
+    pass('location_filter reject_missing drops unknown locations without changing the default');
+  } else {
+    fail('location_filter reject_missing semantics drifted');
+  }
 
   // ── posting-age filter (max_posting_age_days) ──
   // Opt-in freshness gate. `now` is injected so the boundary math is deterministic.

@@ -53,6 +53,7 @@ import { normalizeCompany } from './tracker-utils.mjs';
 import { normalizeCompanyName } from './invite-match.mjs';
 import { withPipelineLock } from './pipeline-lock.mjs';
 import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
+import { buildDiscoveryClassifier, DISCOVERY_LANES } from './lib/discovery-lanes.mjs';
 import { withPortalHealthLock } from './portal-health-lock.mjs';
 
 try {
@@ -78,6 +79,7 @@ const PROFILE_PATH = process.env.CAREER_OPS_PROFILE || 'config/profile.yml';
 // lane A is silently counted as a duplicate in lane B and never shown at all.
 const SCAN_HISTORY_PATH = process.env.CAREER_OPS_SCAN_HISTORY || 'data/scan-history.tsv';
 const PIPELINE_PATH = process.env.CAREER_OPS_PIPELINE || 'data/pipeline.md';
+const DISCOVERY_AUDIT_PATH = process.env.CAREER_OPS_DISCOVERY_AUDIT || 'data/discovery-audit.tsv';
 const APPLICATIONS_PATH = 'data/applications.md';
 const PROVIDERS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'providers');
 
@@ -201,8 +203,8 @@ export function matchedTitleKeywords(title, titleFilter) {
 // ── Location filter ─────────────────────────────────────────────────
 // Optional. If `location_filter` is absent from portals.yml, all locations pass.
 // Semantics (case-insensitive substring, in this order):
-//   - Empty / whitespace-only / non-string location → pass (don't penalize
-//     missing or malformed provider data)
+//   - Empty / whitespace-only / non-string location → pass by default; reject
+//     only when the opt-in `reject_missing` flag is true
 //   - `block_hard` matches → reject (the only tier `always_allow` cannot
 //     override; for country-level terms that are never a false rejection)
 //   - `always_allow` matches → pass (takes precedence over `block` — lets a
@@ -339,6 +341,7 @@ export function titleSignalsRemote(title) {
 // location-only semantics, which is what the existing unit tests exercise.
 export function buildLocationFilter(locationFilter) {
   if (!locationFilter) return () => true;
+  const rejectMissing = locationFilter.reject_missing === true;
   const alwaysAllow = compileLocationKeywordList(locationFilter.always_allow);
   const allow = compileLocationKeywordList(locationFilter.allow);
   const block = compileLocationKeywordList(locationFilter.block);
@@ -347,8 +350,9 @@ export function buildLocationFilter(locationFilter) {
   return (location, url, title) => {
     const lower = typeof location === 'string' ? location.trim().toLowerCase() : '';
     const hint = locationHintFromUrl(url);
-    // Nothing to judge on either field → pass (don't penalize missing data).
-    if (lower === '' && hint === '') return true;
+    // Nothing to judge on either field → pass by default. A narrowly scoped
+    // personal search may opt into dropping unknowns instead.
+    if (lower === '' && hint === '') return !rejectMissing;
     const matches = (m) => (lower !== '' && m(lower)) || (hint !== '' && m(hint));
     // `block_hard` is the ONE tier always_allow cannot override. It exists because
     // a European city name can be a whole word inside a non-European location, so
@@ -1791,6 +1795,17 @@ export function formatPipelineOffer(offer) {
   // posted:, before note:, for a stable serialization.
   const trust = formatTrustSegment(offer);
   if (trust) line = `${line} | ${trust}`;
+  // Discovery classification is deterministic and zero-token. Only likely and
+  // verify offers reach the pipeline; excluded decisions live in the audit TSV.
+  // Labeled segments keep old positional readers forward-compatible.
+  const lane = ['likely', 'verify'].includes(offer.discoveryLane)
+    ? sanitizeMarkdownField(offer.discoveryLane)
+    : '';
+  const discoveryReason = typeof offer.discoveryReason === 'string'
+    ? sanitizeMarkdownField(offer.discoveryReason)
+    : '';
+  if (lane) line = `${line} | lane: ${lane}`;
+  if (lane && discoveryReason) line = `${line} | reason: ${discoveryReason}`;
   // Optional free-text ranking signal (e.g. a curated-list flag an importer
   // attaches). Labeled — not positional like location/compensation — so it can
   // ride on any row shape (bare URL, 3-, 4-, or 5-column) without a reader
@@ -1798,6 +1813,38 @@ export function formatPipelineOffer(offer) {
   // source-specific, and an offer without `note` produces byte-identical output.
   const note = typeof offer.note === 'string' ? sanitizeMarkdownField(offer.note) : '';
   return note ? `${line} | note: ${note}` : line;
+}
+
+/**
+ * One immutable, per-scan classification record. This is deliberately separate
+ * from scan-history.tsv: excluded jobs must remain auditable without becoming
+ * permanent dedup entries that a later policy change can never reconsider.
+ */
+export function formatDiscoveryAuditRow(record, runAt) {
+  const offer = record.offer || {};
+  return [
+    runAt,
+    normalizeScanUrl(offer.url),
+    offer.company || '',
+    offer.title || '',
+    offer.location || '',
+    record.decision?.lane || '',
+    (record.decision?.reasons || []).join(','),
+    record.decision?.summary || '',
+    offer.source || '',
+    postedAtIsoDate(offer.postedAt),
+  ].map(sanitizeTsvField).join('\t');
+}
+
+export async function appendDiscoveryAudit(records, runAt, auditPath = DISCOVERY_AUDIT_PATH) {
+  if (!records.length) return;
+  await withPipelineLock(auditPath, () => {
+    if (!existsSync(auditPath)) {
+      mkdirSync(path.dirname(auditPath), { recursive: true });
+      writeFileSync(auditPath, 'run_at\turl\tcompany\ttitle\tlocation\tlane\treasons\tsummary\tsource\tposted_at\n', 'utf-8');
+    }
+    appendFileSync(auditPath, records.map(record => formatDiscoveryAuditRow(record, runAt)).join('\n') + '\n', 'utf-8');
+  });
 }
 
 // postedAt arrives as epoch ms (or absent). Convert to 'YYYY-MM-DD', or '' when missing.
@@ -2450,6 +2497,15 @@ async function main() {
   }
 
   const locationFilter = buildLocationFilter(config.location_filter);
+  const discoveryClassifier = buildDiscoveryClassifier({
+    ...(config.discovery_lanes || {}),
+    // Reuse the established personal geography by default. A classifier may
+    // override either list explicitly, but the common setup has one source.
+    local_location_keywords: config.discovery_lanes?.local_location_keywords
+      ?? config.location_filter?.always_allow,
+    foreign_location_keywords: config.discovery_lanes?.foreign_location_keywords
+      ?? config.location_filter?.block,
+  });
   const postingAgeFilter = buildPostingAgeFilter(config.max_posting_age_days);
   const postedDateFilter = buildPostedDateFilter(effectiveAfter, postedBefore);
 
@@ -2553,6 +2609,7 @@ async function main() {
   let totalFilteredVisa = 0;
   let totalDupes = 0;
   const newOffers = [];
+  const discoveryAudit = [];
   const errors = [...resolveErrors];
   const emptyTargets = [];
 
@@ -2659,11 +2716,24 @@ async function main() {
           totalFilteredTier++;
           continue;
         }
-        // job.title is passed so a role whose remoteness is stated in the title
-        // ("Program Manager - Remote") isn't rejected for a city-only location.
-        if (!locationFilter(job.location, job.url, job.title)) {
-          totalFilteredLocation++;
-          continue;
+        if (discoveryClassifier.enabled) {
+          const decision = discoveryClassifier.classify(job);
+          job.discoveryLane = decision.lane;
+          job.discoveryReason = decision.summary;
+          discoveryAudit.push({ offer: { ...job, source: sourceName }, decision });
+          // Excluded roles stay in discovery-audit.tsv so policy changes and
+          // manual audits can revisit them. They never enter the pending queue.
+          if (decision.lane === DISCOVERY_LANES.EXCLUDED) {
+            totalFilteredLocation++;
+            continue;
+          }
+        } else {
+          // Legacy boolean filter when the three-lane classifier is disabled.
+          // job.title is passed so title-stated remote work can satisfy allow.
+          if (!locationFilter(job.location, job.url, job.title)) {
+            totalFilteredLocation++;
+            continue;
+          }
         }
         if (!postingAgeFilter(job.postedAt)) {
           totalFilteredPostingAge++;
@@ -2732,6 +2802,10 @@ async function main() {
   });
 
   await parallelFetch(tasks, CONCURRENCY);
+
+  if (!dryRun && discoveryClassifier.enabled) {
+    await appendDiscoveryAudit(discoveryAudit, new Date().toISOString());
+  }
 
   // 5.5. Optional liveness verification — drop expired and guard-rejected postings
   let verifiedOffers = newOffers;
@@ -2828,7 +2902,14 @@ async function main() {
   if (skipTiers.length > 0) {
     console.log(`Filtered by tier:      ${totalFilteredTier} removed`);
   }
-  if (config.location_filter || totalFilteredLocation > 0) {
+  if (discoveryClassifier.enabled) {
+    const laneCounts = { likely: 0, verify: 0, excluded: 0 };
+    for (const record of discoveryAudit) {
+      const lane = record.decision?.lane;
+      if (lane in laneCounts) laneCounts[lane]++;
+    }
+    console.log(`Discovery lanes:       ${laneCounts.likely} likely, ${laneCounts.verify} verify, ${laneCounts.excluded} excluded`);
+  } else if (config.location_filter || totalFilteredLocation > 0) {
     console.log(`Filtered by location:  ${totalFilteredLocation} removed`);
   }
   if (config.max_posting_age_days != null || totalFilteredPostingAge > 0) {
@@ -2994,12 +3075,14 @@ async function main() {
         ? ` [Trust: ${o.trustScore}/100${o.trustFlags?.length ? ' — ' + o.trustFlags.join(', ') : ''}]`
         : '';
       const blacklistSuffix = o.blacklisted ? ' [BLACKLISTED — on your do-not-apply list]' : '';
-      console.log(`  + ${o.company} | ${o.title} | ${o.location || 'N/A'}${trustSuffix}${blacklistSuffix}`);
+      const laneSuffix = o.discoveryLane ? ` [${o.discoveryLane.toUpperCase()}: ${o.discoveryReason}]` : '';
+      console.log(`  + ${o.company} | ${o.title} | ${o.location || 'N/A'}${laneSuffix}${trustSuffix}${blacklistSuffix}`);
     }
     if (dryRun) {
       console.log('\n(dry run — run without --dry-run to save results)');
     } else {
-      console.log(`\nResults saved to ${PIPELINE_PATH} and ${SCAN_HISTORY_PATH}`);
+      const auditSuffix = discoveryClassifier.enabled ? `; audit saved to ${DISCOVERY_AUDIT_PATH}` : '';
+      console.log(`\nResults saved to ${PIPELINE_PATH} and ${SCAN_HISTORY_PATH}${auditSuffix}`);
     }
   }
 

@@ -93,6 +93,7 @@ AI-powered, CLI-agnostic job search automation: pipeline tracking, offer evaluat
 | `data/pipeline.md` | Inbox of pending URLs |
 | `data/scan-history.tsv` | Scanner dedup history |
 | `data/scan-runs.tsv` | Per-run scan counters (appended by `scan.mjs`, read by `stats.mjs`) |
+| `data/discovery-audit.tsv` | Per-scan likely/verify/excluded decisions and reasons for title-matched postings; excluded roles are auditable here but never enter the processing queue |
 | `data/follow-ups.md` | Follow-up history tracker |
 | `data/blacklist.md` | Do-not-apply companies (user layer, opt-in, never auto-populated; respected by `scan.mjs` and the `auto-pipeline`/`oferta`/`apply` gates) |
 | `data/salary-observations.tsv` | Append-only salary observation log (user layer) |

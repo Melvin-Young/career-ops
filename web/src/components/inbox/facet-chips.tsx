@@ -2,6 +2,7 @@
 
 import { Search, X } from "lucide-react";
 import type { AtsSource } from "@/lib/explore";
+import type { DiscoveryLane } from "@/lib/career-ops";
 import { ATS_LABEL } from "@/lib/explore";
 import { FRESHNESS_WINDOWS, SENIORITY_LABEL, type Seniority } from "@/lib/inbox";
 import { CostBadge } from "@/components/cost/cost-badge";
@@ -17,12 +18,15 @@ export function FacetChips({
   toggleSource,
   seniorities,
   toggleSeniority,
+  lanes,
+  toggleLane,
   locQ,
   setLocQ,
   kw,
   setKw,
   availSources,
   availSeniorities,
+  availLanes,
   resultCount,
   totalCount,
   anyActive,
@@ -34,12 +38,15 @@ export function FacetChips({
   toggleSource: (s: AtsSource) => void;
   seniorities: Set<Seniority>;
   toggleSeniority: (s: Seniority) => void;
+  lanes: Set<DiscoveryLane>;
+  toggleLane: (lane: DiscoveryLane) => void;
   locQ: string;
   setLocQ: (v: string) => void;
   kw: string;
   setKw: (v: string) => void;
   availSources: AtsSource[];
   availSeniorities: Seniority[];
+  availLanes: DiscoveryLane[];
   resultCount: number;
   totalCount: number;
   anyActive: boolean;
@@ -92,6 +99,12 @@ export function FacetChips({
         {availSeniorities.map((s) => (
           <Pill key={s} on={seniorities.has(s)} onClick={() => toggleSeniority(s)}>
             {SENIORITY_LABEL[s]}
+          </Pill>
+        ))}
+
+        {availLanes.map((lane) => (
+          <Pill key={lane} on={lanes.has(lane)} onClick={() => toggleLane(lane)}>
+            {lane === "likely" ? "Likely" : "Verify"}
           </Pill>
         ))}
 

@@ -116,7 +116,10 @@ function toEpochMs(value) {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-// Build the full location string from primary + secondary locations.
+// Build the full location string from work arrangement + primary + secondary
+// locations. Ashby can list office hubs in `location` while separately marking
+// the role remote with `isRemote` / `workplaceType`; dropping that flag turns a
+// US-remote role into an apparent San Francisco or New York on-site role.
 // Ashby's posting-api puts extra hiring regions in `secondaryLocations[]`
 // (each with a region label + a postalAddress). Using only `j.location` drops
 // them, so an EU-eligible role whose PRIMARY label is e.g. "Canada" reads as
@@ -124,8 +127,11 @@ function toEpochMs(value) {
 // in each secondary's region, locality, and country so the filter can match
 // (e.g. "Europe", "Berlin", "Germany"). Deduped, joined with " · ".
 /** @param {any} j */
-function formatLocation(j) {
+export function formatLocation(j) {
   const parts = [];
+  if (j.isRemote === true || String(j.workplaceType || '').trim().toLowerCase() === 'remote') {
+    parts.push('Remote');
+  }
   if (typeof j.location === 'string' && j.location.trim()) parts.push(j.location.trim());
   if (Array.isArray(j.secondaryLocations)) {
     for (const s of j.secondaryLocations) {

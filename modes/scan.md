@@ -138,7 +138,7 @@ For companies with a public API or structured feed **that are not in `local_pars
 
 **Parsing Conventions by Provider:**
 - `greenhouse`: `jobs[]` → `title`, `absolute_url`, `location.name`
-- `ashby`: GET REST API → `jobs[]` with `title`, `jobUrl`, `location` (fold in `secondaryLocations[]` — Ashby lists extra hiring regions there), `compensation` (`minValue`/`maxValue`/`currency`; already fetched via `?includeCompensation=true`), `publishedAt`; slug derived from `careers_url` pattern `jobs.ashbyhq.com/{slug}`
+- `ashby`: GET REST API → `jobs[]` with `title`, `jobUrl`, `location` (prepend `Remote` when `isRemote` or `workplaceType` marks it remote; fold in `secondaryLocations[]` because Ashby lists extra hiring regions there), `compensation` (`minValue`/`maxValue`/`currency`; already fetched via `?includeCompensation=true`), `publishedAt`; slug derived from `careers_url` pattern `jobs.ashbyhq.com/{slug}`
 - `bamboohr`: list `result[]` → `jobOpeningName`, `id`, `location` (city + state; append "Remote" when `isRemote`); build detail URL `https://{company}.bamboohr.com/careers/{id}/detail`; to read full JD, make a GET request to the detail URL and use `result.jobOpening` (`jobOpeningName`, `description`, `datePosted`, `minimumExperience`, `compensation`, `jobOpeningShareUrl`)
 - `lever`: root array `[]` → `text`, `hostedUrl` (fallback: `applyUrl`), `categories.location`, `descriptionPlain` (the list API ships the JD body — feeds `content_filter` and the #1597 cross-listing fingerprint)
 - `teamtailor`: RSS items → `title`, `link`, `location` (from the `tt:` block — `tt:city` / `tt:country`)
@@ -193,7 +193,7 @@ Levels are additive — they are executed in order, and results are merged and d
    For each company in `tracked_companies` with a defined `api:`, `enabled: true`, and a **name not listed in `local_parser_ok`**:
    a. WebFetch the API/feed URL.
    b. If `api_provider` is defined, use its parser; if undefined, infer by domain (`boards-api.greenhouse.io`, `api.ashbyhq.com`, `api.(eu.)?lever.co`, `*.bamboohr.com`, `*.teamtailor.com`, `*.myworkdayjobs.com`, `*.breezy.hr`).
-   c. For **Ashby**, send a GET request to `https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true` (slug from `careers_url`). Parse `jobs[]` → `title`, `jobUrl`, `location` (fold in `secondaryLocations[]`), `compensation`. No GraphQL needed.
+   c. For **Ashby**, send a GET request to `https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true` (slug from `careers_url`). Parse `jobs[]` → `title`, `jobUrl`, `location` (prepend `Remote` from `isRemote` / `workplaceType`, then fold in `secondaryLocations[]`), `compensation`. No GraphQL needed.
    d. For **BambooHR**, the list only returns basic metadata. For each relevant item, retrieve the `id`, make a GET request to `https://{company}.bamboohr.com/careers/{id}/detail`, and extract the full JD from `result.jobOpening`. Use `jobOpeningShareUrl` as the public URL if present; otherwise, use the detail URL.
    e. For **Workday**, send a JSON POST request with at least `{"appliedFacets":{},"limit":20,"offset":0,"searchText":""}` and paginate by `offset` until results are exhausted.
    f. For each job, extract and normalize: `{title, url, company, location}`.
@@ -216,12 +216,20 @@ Levels are additive — they are executed in order, and results are merged and d
 
 6b. **Filter by Location (Optional)** using `location_filter` from `portals.yml`:
    - If the `location_filter` block is absent, all locations pass (default behavior).
-   - Empty location on a posting → passes (do not penalize missing data).
-   - Any keyword from `block` present → reject (precedes allow).
-   - Empty `allow` → passes (already cleared block).
-   - Non-empty `allow` → must match at least one keyword.
-   - All matches are case-insensitive substring matches.
+   - Empty location on a posting passes by default; `reject_missing: true` opts into rejection.
+   - Precedence is `block_hard` → `always_allow` → `block` → `allow`.
+   - All matches are case-insensitive and word-boundary aware.
+   - A title-stated Remote marker can satisfy a non-empty `allow` list only after block checks.
    - The location is persisted as the 7th column in `scan-history.tsv` for later auditing.
+
+6b.1. **Three-lane discovery (Optional)** using `discovery_lanes` from `portals.yml`:
+   - `enabled: true` replaces the binary location drop with the pure `lib/discovery-lanes.mjs` classifier.
+   - **Likely**: specific target title plus the configured local search area or explicit eligible-country remote evidence.
+   - **Verify**: remote eligibility unclear, US/multi-region metadata ambiguous, missing location on a specific title, or a broad title at an explicitly configured AI-focused company.
+   - **Excluded**: explicit ineligible-country-only / out-of-area on-site roles, or broad titles with no AI signal.
+   - Likely and Verify offers continue into `data/pipeline.md` with labeled `lane:` and `reason:` segments.
+   - Excluded offers never enter the processing queue. Every title-matched decision is appended to `data/discovery-audit.tsv`, which is evidence only and never a dedup source.
+   - `local_location_keywords` and `foreign_location_keywords` default to `location_filter.always_allow` and `location_filter.block`, respectively, so personal geography stays in one place.
 
 6c. **Filter by Posting Age (Optional)** using `max_posting_age_days` from `portals.yml`:
    - Opt-in. If the key is absent, 0, or non-positive, all ages pass (default behavior).

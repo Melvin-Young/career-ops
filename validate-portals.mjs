@@ -170,6 +170,30 @@ export async function validatePortalsConfig(config, { providerIds = new Set() } 
       validateKeywordList(config.location_filter.allow, 'location_filter.allow', errors);
       validateKeywordList(config.location_filter.block, 'location_filter.block', errors);
       validateKeywordList(config.location_filter.block_hard, 'location_filter.block_hard', errors);
+      if (config.location_filter.reject_missing !== undefined && typeof config.location_filter.reject_missing !== 'boolean') {
+        add(errors, 'location_filter.reject_missing', 'must be a boolean when set');
+      }
+    }
+  }
+
+  if (config.discovery_lanes !== undefined) {
+    if (!isObject(config.discovery_lanes)) {
+      add(errors, 'discovery_lanes', 'discovery_lanes must be an object');
+    } else {
+      if (config.discovery_lanes.enabled !== undefined && typeof config.discovery_lanes.enabled !== 'boolean') {
+        add(errors, 'discovery_lanes.enabled', 'must be a boolean when set');
+      }
+      for (const field of [
+        'broad_title_keywords',
+        'ai_context_keywords',
+        'ai_focused_companies',
+        'local_location_keywords',
+        'eligible_country_keywords',
+        'foreign_location_keywords',
+        'onsite_keywords',
+      ]) {
+        validateKeywordList(config.discovery_lanes[field], `discovery_lanes.${field}`, errors);
+      }
     }
   }
 

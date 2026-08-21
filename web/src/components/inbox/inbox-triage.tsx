@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Undo2 } from "lucide-react";
 import { useJobs } from "@/components/jobs/job-store";
-import type { InboxJob } from "@/lib/career-ops";
+import type { DiscoveryLane, InboxJob } from "@/lib/career-ops";
 import type { AtsSource } from "@/lib/explore";
 import { ATS_SOURCES } from "@/lib/explore";
 import { daysSince, seniorityFromTitle, sourceFromUrl, SENIORITY_ORDER, type Seniority } from "@/lib/inbox";
@@ -17,10 +17,9 @@ const HIDDEN_KEY = "career-ops:hidden";
 const CONFIG_KEY = "career-ops:config";
 const BATCH = 20;
 
-// The inbox as a TRIAGE surface: Abundance → Triage → Shortlist → Opt-in Score.
-// Default is a small fresh batch (never the full wall); free facets + Save/Skip narrow
-// it; only "Score shortlist" spends tokens. 🔴 The shell is agnostic to what makes a
-// role relevant — order is freshness with a single documented plug point.
+// The inbox as a review surface: Discovery lanes → Shortlist → Opt-in Score.
+// Default is a small batch with Likely before Verify before legacy/unclassified;
+// free facets + Save/Skip narrow it, and only "Score shortlist" spends tokens.
 export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
   const { jobs, startJob } = useJobs();
 
@@ -28,6 +27,7 @@ export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
   const [within, setWithin] = useState<number | null>(null);
   const [sources, setSources] = useState<Set<AtsSource>>(() => new Set());
   const [seniorities, setSeniorities] = useState<Set<Seniority>>(() => new Set());
+  const [lanes, setLanes] = useState<Set<DiscoveryLane>>(() => new Set());
   const [locQ, setLocQ] = useState("");
   const [kw, setKw] = useState("");
   const [showAll, setShowAll] = useState(false);
@@ -108,6 +108,10 @@ export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
     for (const e of enriched) if (e.seniority && !hidden.includes(e.job.url)) set.add(e.seniority);
     return SENIORITY_ORDER.filter((s) => set.has(s));
   }, [enriched, hidden]);
+  const availLanes = useMemo(() => {
+    const set = new Set(enriched.filter((e) => !hidden.includes(e.job.url)).map((e) => e.job.discoveryLane).filter((lane): lane is DiscoveryLane => !!lane));
+    return (["likely", "verify"] as DiscoveryLane[]).filter((lane) => set.has(lane));
+  }, [enriched, hidden]);
 
   const filtered = useMemo(
     () =>
@@ -116,19 +120,22 @@ export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
         if (within != null && (e.age == null || e.age > within)) return false;
         if (sources.size && (!e.source || !sources.has(e.source))) return false;
         if (seniorities.size && (!e.seniority || !seniorities.has(e.seniority))) return false;
+        if (lanes.size && (!e.job.discoveryLane || !lanes.has(e.job.discoveryLane))) return false;
         if (locQ.trim() && !(e.job.location || "").toLowerCase().includes(locQ.trim().toLowerCase())) return false;
         if (kw.trim() && !`${e.job.company} ${e.job.role}`.toLowerCase().includes(kw.trim().toLowerCase())) return false;
         return true;
       }),
-    [enriched, hidden, within, sources, seniorities, locQ, kw],
+    [enriched, hidden, within, sources, seniorities, lanes, locQ, kw],
   );
 
-  // 🔴 SINGLE ORDER PLUG POINT — freshness only (newest first_seen first; unknown last).
-  // A smarter ranker replaces ONLY this comparator; facets/triage/shortlist/score never
-  // touch relevance. This is the whole firewall in one line.
-  const ordered = useMemo(() => [...filtered].sort((a, b) => (a.age ?? Infinity) - (b.age ?? Infinity)), [filtered]);
+  // Deterministic discovery lane first, freshness within a lane. Legacy rows
+  // without classification stay visible after the new Likely/Verify entries.
+  const ordered = useMemo(() => {
+    const laneRank = (lane?: DiscoveryLane) => lane === "likely" ? 0 : lane === "verify" ? 1 : 2;
+    return [...filtered].sort((a, b) => laneRank(a.job.discoveryLane) - laneRank(b.job.discoveryLane) || (a.age ?? Infinity) - (b.age ?? Infinity));
+  }, [filtered]);
 
-  const anyFacet = within != null || sources.size > 0 || seniorities.size > 0 || locQ.trim() !== "" || kw.trim() !== "";
+  const anyFacet = within != null || sources.size > 0 || seniorities.size > 0 || lanes.size > 0 || locQ.trim() !== "" || kw.trim() !== "";
   const capped = !showAll && !anyFacet;
   const visible = capped ? ordered.slice(0, BATCH) : ordered;
   const hiddenCount = hidden.length;
@@ -188,16 +195,19 @@ export function InboxTriage({ inbox }: { inbox: InboxJob[] }) {
         toggleSource={(s) => setSources((set) => { const n = new Set(set); n.has(s) ? n.delete(s) : n.add(s); return n; })}
         seniorities={seniorities}
         toggleSeniority={(s) => setSeniorities((set) => { const n = new Set(set); n.has(s) ? n.delete(s) : n.add(s); return n; })}
+        lanes={lanes}
+        toggleLane={(lane) => setLanes((set) => { const next = new Set(set); next.has(lane) ? next.delete(lane) : next.add(lane); return next; })}
         locQ={locQ}
         setLocQ={setLocQ}
         kw={kw}
         setKw={setKw}
         availSources={availSources}
         availSeniorities={availSeniorities}
+        availLanes={availLanes}
         resultCount={filtered.length}
         totalCount={enriched.length - hiddenCount}
         anyActive={anyFacet}
-        onClear={() => { setWithin(null); setSources(new Set()); setSeniorities(new Set()); setLocQ(""); setKw(""); }}
+        onClear={() => { setWithin(null); setSources(new Set()); setSeniorities(new Set()); setLanes(new Set()); setLocQ(""); setKw(""); }}
       />
 
       {/* batch header: fresh slice by default, or the full filtered set */}

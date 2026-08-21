@@ -72,12 +72,14 @@ export function TriageRow({
           <span className="text-muted"> · {job.role}</span>
         </p>
         <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-faint">
+          {job.discoveryLane && <Badge tone={job.discoveryLane === "likely" ? "good" : "warn"}>{job.discoveryLane === "likely" ? "Likely" : "Verify"}</Badge>}
           {job.location && <span className="truncate">{job.location}</span>}
           {source && <span className="rounded bg-surface-hover px-1 py-px font-medium text-muted">{ATS_LABEL[source]}</span>}
           {ago && <span>{ago}</span>}
           {/* 🔴 CRUDA: honest "not scored" — no fabricated match%. */}
           {!evaluated && <span className="italic text-muted">not scored</span>}
         </p>
+        {job.discoveryReason && <p className="mt-0.5 truncate text-[11px] text-muted">{job.discoveryReason}</p>}
       </div>
 
       {/* EVALUADA state (right-aligned, visually distinct from raw rows) */}
