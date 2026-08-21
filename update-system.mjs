@@ -221,6 +221,7 @@ const SYSTEM_PATHS = [
   'upskill.mjs',
   'skill-extract.mjs',
   'intake.mjs',
+  'import-career-evidence.mjs',
   'stats.mjs',
   'detect-reposts.mjs',
   'rank-pipeline.mjs',

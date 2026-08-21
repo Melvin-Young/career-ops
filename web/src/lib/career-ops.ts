@@ -150,6 +150,188 @@ export function readApplications(): Application[] {
   return parseApplications(md, careerOpsRoot());
 }
 
+export type CareerEvidenceLabel = "Demonstrated" | "Transferable" | "Unverified" | "Gap";
+
+export type CareerEvidenceItem = {
+  id: string;
+  label: CareerEvidenceLabel;
+  claim: string;
+  category?: string;
+  scope?: string;
+  signal?: string;
+  approval?: "approved" | "pending";
+  outwardEligible: boolean;
+  source: { path: string; section?: string };
+};
+
+export type CareerMarketSkill = {
+  id: string;
+  category: string;
+  skill: string;
+  mentions: number;
+  currentEvidence: string;
+  label: CareerEvidenceLabel;
+  outwardEligible: false;
+  source: { path: string; section?: string };
+};
+
+export type CareerVoiceReference = {
+  id: string;
+  title: string;
+  path: string;
+  contentHash: string;
+  importedPath: string;
+};
+
+export type CareerEvidenceStore = {
+  schemaVersion: 1;
+  sources: Array<{ kind: string; sourceRoot: string; fingerprint: string; importedAt: string }>;
+  evidence: CareerEvidenceItem[];
+  marketSkills: CareerMarketSkill[];
+  voiceReferences: CareerVoiceReference[];
+};
+
+/** Read-only Career Evidence view for the personal dashboard. A missing store
+ * is a valid empty state; malformed state is surfaced instead of silently
+ * becoming empty so a manual audit cannot overlook evidence corruption. */
+export function readCareerEvidence(): { exists: boolean; data: CareerEvidenceStore | null; error: string | null } {
+  const file = path.join(careerOpsRoot(), "data", "career-evidence.json");
+  if (!fs.existsSync(file)) return { exists: false, data: null, error: null };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as CareerEvidenceStore;
+    if (
+      parsed?.schemaVersion !== 1
+      || !Array.isArray(parsed.sources)
+      || !Array.isArray(parsed.evidence)
+      || !Array.isArray(parsed.marketSkills)
+      || !Array.isArray(parsed.voiceReferences)
+    ) throw new Error("unsupported or incomplete schema");
+    return { exists: true, data: parsed, error: null };
+  } catch (error) {
+    return { exists: true, data: null, error: error instanceof Error ? error.message : "unknown parse error" };
+  }
+}
+
+export type CareerHistoryRecord = {
+  id: string;
+  kind: "job" | "fit-analysis";
+  title: string;
+  company: string | null;
+  role: string | null;
+  captured: string | null;
+  source: { path: string; contentHash: string };
+  content: string;
+};
+
+export function readCareerHistory(): { jobs: CareerHistoryRecord[]; analyses: CareerHistoryRecord[]; error: string | null } {
+  const file = path.join(careerOpsRoot(), "data", "career-history.json");
+  if (!fs.existsSync(file)) return { jobs: [], analyses: [], error: null };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.jobs) || !Array.isArray(parsed.analyses)) throw new Error("unsupported or incomplete schema");
+    return { jobs: parsed.jobs, analyses: parsed.analyses, error: null };
+  } catch (error) {
+    return { jobs: [], analyses: [], error: error instanceof Error ? error.message : "unknown parse error" };
+  }
+}
+
+export type StatusHistoryEntry = { date: string; from: string; to: string; source: string; note: string };
+
+export function readStatusHistory(n: string): StatusHistoryEntry[] {
+  if (!/^\d+$/.test(n)) return [];
+  const tsv = read("data/status-log.tsv");
+  if (!tsv) return [];
+  return tsv.split(/\r?\n/).flatMap((line) => {
+    const [selector, date, from, to, source, ...note] = line.split("\t");
+    if (selector !== n || !date || !to) return [];
+    return [{ date, from: from === "-" ? "Unknown" : from, to: to === "-" ? "Unknown" : to, source: source || "unknown", note: note.join("\t") }];
+  });
+}
+
+export type RoleActivityEntry = {
+  kind: "follow-up" | "reply" | "interview" | "export";
+  date: string;
+  title: string;
+  detail: string;
+};
+
+function firstMarkdownTable(content: string): Array<Record<string, string>> {
+  const lines = content.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^\s*\|.*\|\s*$/.test(line));
+  if (start < 0) return [];
+  const table: string[] = [];
+  for (const line of lines.slice(start)) {
+    if (!/^\s*\|.*\|\s*$/.test(line)) break;
+    table.push(line);
+  }
+  const split = (line: string) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+  const header = split(table[0] ?? "");
+  return table.slice(1).flatMap((line) => {
+    const cells = split(line);
+    if (cells.every((cell) => /^:?-+:?$/.test(cell)) || cells.length !== header.length) return [];
+    return [Object.fromEntries(header.map((name, index) => [name.toLowerCase(), cells[index]]))];
+  });
+}
+
+/** Join the personal lifecycle sources that belong in one role workspace.
+ * Missing files are normal empty states; uncertain reply matches stay out. */
+export function readRoleActivity(app: Application): RoleActivityEntry[] {
+  const activity: RoleActivityEntry[] = [];
+  const followups = read("data/follow-ups.md");
+  if (followups) {
+    for (const row of firstMarkdownTable(followups)) {
+      const appNum = row.appnum ?? row.app ?? row["app#"];
+      if (appNum !== app.n) continue;
+      activity.push({ kind: "follow-up", date: row.date ?? "", title: `${row.channel || "Follow-up"} follow-up`, detail: [row.contact, row.notes].filter(Boolean).join(" · ") });
+    }
+  }
+
+  const interviews = read("data/active-interviews.md") ?? read("active-interviews.md");
+  if (interviews) {
+    for (const row of firstMarkdownTable(interviews)) {
+      const notes = row.notes ?? "";
+      const exact = new RegExp(`#${app.n}\\s+in\\s+tracker`, "i").test(notes);
+      const namesMatch = (row.company ?? "").toLowerCase() === app.company.toLowerCase() && (row.role ?? "").toLowerCase() === app.role.toLowerCase();
+      if (!exact && !namesMatch) continue;
+      activity.push({ kind: "interview", date: row["date/time"] ?? row.date ?? "", title: [row.round, row.status].filter(Boolean).join(" · ") || "Interview", detail: [row.interviewer, notes].filter(Boolean).join(" · ") });
+    }
+  }
+
+  const replies = read("data/reply-candidates.json");
+  if (replies) {
+    try {
+      const parsed = JSON.parse(replies);
+      const items = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.candidates) ? parsed.candidates : [];
+      for (const item of items) {
+        const exact = String(item.application_num ?? item.appNum ?? "") === app.n;
+        const text = `${item.subject ?? ""} ${item.body_snippet ?? item.body ?? ""}`.toLowerCase();
+        const namesMatch = text.includes(app.company.toLowerCase()) && text.includes(app.role.toLowerCase());
+        if (!exact && !namesMatch) continue;
+        activity.push({ kind: "reply", date: String(item.date ?? item.received_at ?? ""), title: String(item.subject ?? item.signal ?? "Application reply"), detail: String(item.from ?? item.body_snippet ?? "") });
+      }
+    } catch { /* corrupt reply candidates are surfaced by reply-watch; do not guess here */ }
+  }
+
+  const outputRoot = path.join(careerOpsRoot(), "output");
+  if (fs.existsSync(outputRoot)) {
+    const prefix = `${app.n.padStart(3, "0")}-`;
+    for (const bundle of fs.readdirSync(outputRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix))) {
+      const artifacts = path.join(outputRoot, bundle.name, "artifacts");
+      if (!fs.existsSync(artifacts)) continue;
+      for (const kind of ["resume", "cover-letter"]) {
+        const kindRoot = path.join(artifacts, kind);
+        if (!fs.existsSync(kindRoot)) continue;
+        for (const version of fs.readdirSync(kindRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
+          const pdf = path.join(kindRoot, version.name, "artifact.pdf");
+          if (!fs.existsSync(pdf)) continue;
+          activity.push({ kind: "export", date: fs.statSync(pdf).mtime.toISOString(), title: `${kind === "resume" ? "Resume" : "Cover letter"} ${version.name} exported`, detail: path.relative(careerOpsRoot(), pdf) });
+        }
+      }
+    }
+  }
+  return activity.sort((a, b) => b.date.localeCompare(a.date));
+}
+
 /**
  * Server-side lifecycle of the user's setup — mirrors the prerequisite list that
  * doctor.mjs uses (cv.md, config/profile.yml, modes/_profile.md, portals.yml), by

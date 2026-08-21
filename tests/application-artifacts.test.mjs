@@ -4,7 +4,16 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { rmSync } from './helpers.mjs';
-import { applicationArtifactPaths, ensureApplicationArtifactDirs, slugifySegment, writeReuseDecision } from '../application-artifacts.mjs';
+import {
+  applicationArtifactPaths,
+  approveArtifactVersion,
+  ensureApplicationArtifactDirs,
+  listArtifactVersions,
+  resolveApprovedArtifact,
+  saveArtifactDraft,
+  slugifySegment,
+  writeReuseDecision,
+} from '../application-artifacts.mjs';
 import { repoRelativeManifestPath, workspaceRelativeManifestPath } from '../generate-pdf.mjs';
 
 function expectError(label, action, pattern) {
@@ -62,6 +71,49 @@ try {
   expectError('changed sections must be an array', () => writeReuseDecision(paths, { decision: 'reuse', changedSections: 'Summary' }), /changedSections must be an array/);
   if (slugifySegment('!!!') === 'application') console.log('  ✅ punctuation-only slugs use the application fallback');
   else throw new Error('punctuation-only slug did not use the application fallback');
+
+  const resumeV1 = saveArtifactDraft(paths, {
+    kind: 'resume',
+    content: '# Resume v1\n',
+    opportunityIdentity: 'tracker:7:Acme AI:Senior AI Engineer',
+    sourceIdentity: 'career-profile:sha256:abc',
+    provenance: ['evidence-1'],
+  });
+  const approvedV1 = approveArtifactVersion(paths, { kind: 'resume', version: resumeV1.version });
+  const resolvedV1 = resolveApprovedArtifact(paths, 'resume');
+  if (resumeV1.version === 1
+      && approvedV1.state === 'approved'
+      && resolvedV1.content === '# Resume v1\n'
+      && resolvedV1.metadata.opportunityIdentity === 'tracker:7:Acme AI:Senior AI Engineer'
+      && resolvedV1.metadata.provenance[0] === 'evidence-1') {
+    console.log('  ✅ artifact drafts record opportunity identity and provenance, and resolve only through explicit approval');
+  } else throw new Error('approved artifact did not resolve with its content and provenance');
+
+  const resumeV2 = saveArtifactDraft(paths, {
+    kind: 'resume',
+    content: '# Resume v2\n',
+    opportunityIdentity: 'tracker:7:Acme AI:Senior AI Engineer',
+    sourceIdentity: 'career-profile:sha256:abc',
+    provenance: ['evidence-1', 'evidence-2'],
+    baseVersion: 1,
+  });
+  if (resumeV2.version === 2
+      && resumeV2.state === 'draft'
+      && resolveApprovedArtifact(paths, 'resume').content === '# Resume v1\n') {
+    console.log('  ✅ editing an approved artifact creates a new draft and preserves the approved version');
+  } else throw new Error('approved artifact was overwritten while editing');
+
+  approveArtifactVersion(paths, { kind: 'resume', version: 2 });
+  const versions = listArtifactVersions(paths, 'resume');
+  if (resolveApprovedArtifact(paths, 'resume').content === '# Resume v2\n'
+      && versions.find((item) => item.version === 1)?.state === 'superseded'
+      && versions.find((item) => item.version === 2)?.state === 'approved') {
+    console.log('  ✅ approval advances the pointer and supersedes the prior version without changing content');
+  } else throw new Error('version approval lifecycle is inconsistent');
+
+  expectError('failed approval leaves the previous approved artifact usable', () => approveArtifactVersion(paths, { kind: 'resume', version: 999 }), /does not exist/);
+  if (resolveApprovedArtifact(paths, 'resume').content === '# Resume v2\n') console.log('  ✅ failed approval preserves the last approved artifact');
+  else throw new Error('failed approval damaged the approved pointer');
 
   const repoPaths = applicationArtifactPaths({ reportNum: 7, company: 'Acme AI', role: 'Senior AI Engineer', version: 2, root: join(process.cwd(), 'output') });
   if (workspaceRelativeManifestPath(repoPaths.cv.tailored.html) === 'output/007-acme-ai-senior-ai-engineer/cv/tailored/v002/cv.html'

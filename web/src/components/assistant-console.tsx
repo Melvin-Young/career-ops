@@ -97,11 +97,12 @@ function removeRanges(s: string, cuts: [number, number][]): string {
 // the user is looking at.
 function describePage(p: string): string {
   if (p === "/") return "Today / home — overview of the user's pipeline.";
-  if (p === "/pipeline") return "Pipeline — the applications table + the inbox of pending job URLs.";
+  if (p === "/pipeline") return "Pipeline — Opportunities before submission, Applications after Applied, plus the inbox of pending job URLs.";
   const m = p.match(/^\/pipeline\/([^/]+)$/);
   if (m)
-    return `The user is viewing the EVALUATION REPORT for application #${m[1]}. If they say "this offer", "apply", "evaluate it", "draft a cover letter", they mean application #${m[1]} — read reports/${m[1]}-*.md or the matching data/applications.md row and act on THAT one.`;
+    return `The user is viewing the role workspace for tracked role #${m[1]}. It is an Opportunity until actually submitted, then an Application. If they say "this offer", "apply", "evaluate it", or "draft a cover letter", read reports/${m[1]}-*.md or the matching data/applications.md row and act on THAT one.`;
   if (p === "/analytics") return "Analytics — funnel, score distribution, top companies.";
+  if (p === "/evidence") return "Career Evidence — approved candidate facts, internal market-skill signals, and imported writing references. Market gaps are never user-facing claims.";
   if (p === "/cv") return "CV editor (cv.md).";
   if (p === "/config") return "Config — CLI / engine setup.";
   if (p === "/apply") return "Apply — the form-proxy: the user is reviewing a job application re-rendered in plain language, pre-filled from their CV. You can write/revise answers via setApplyField.";

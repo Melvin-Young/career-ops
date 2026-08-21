@@ -51,6 +51,7 @@ export function ReportView({
   app,
   report,
   canDelete = false,
+  embedded = false,
 }: {
   id: string;
   app: Application | null;
@@ -59,6 +60,7 @@ export function ReportView({
    *  the raw .md filename is a dev artifact, not header content. */
   file?: string | null;
   canDelete?: boolean;
+  embedded?: boolean;
 }) {
   const meta = report ? parseReport(report) : null;
   const field = (label: string) => meta?.fields.find((f) => f.label === label)?.value;
@@ -68,15 +70,15 @@ export function ReportView({
   const url = field("URL");
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
-      <Link
+    <div className={embedded ? "" : "mx-auto max-w-3xl px-6 py-8"}>
+      {!embedded && <Link
         href="/pipeline"
         className="inline-flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-brand"
       >
         <ArrowLeft className="size-4" /> Pipeline
-      </Link>
+      </Link>}
 
-      <header className="mt-5">
+      {!embedded && <header className="mt-5">
         <p className="font-mono text-xs uppercase tracking-[0.18em] text-faint">#{id}</p>
         <div className="mt-2 flex items-center gap-3">
           <CompanyLogo name={app?.company ?? meta?.title ?? `Report #${id}`} size={40} />
@@ -123,7 +125,7 @@ export function ReportView({
             )}
           </div>
         )}
-      </header>
+      </header>}
 
       {report ? (
         <>

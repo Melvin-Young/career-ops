@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Search, ChevronsUpDown, X, Compass, ArrowRight } from "lucide-react";
 import type { Application, InboxJob } from "@/lib/career-ops";
+import { splitTrackedRoles, trackedRoleKind } from "@/lib/tracked-role";
 import { Badge } from "@/components/ui/badge";
 import { CompanyLogo } from "@/components/company-logo";
 import { canonStatus, scoreNum, scoreTone, statusDot } from "@/lib/format";
@@ -14,6 +15,8 @@ import { cn } from "@/lib/cn";
 // INBOX (the triage queue) is the default tab; the rest filter the tracker.
 const TABS = [
   "INBOX",
+  "OPPORTUNITIES",
+  "APPLICATIONS",
   "ALL",
   "EVALUATED",
   "APPLIED",
@@ -33,9 +36,11 @@ type SortKey = (typeof SORT_KEYS)[number];
 export function PipelineView({
   applications,
   inbox,
+  lifecycleStatuses,
 }: {
   applications: Application[];
   inbox: InboxJob[];
+  lifecycleStatuses: Record<string, string[]>;
 }) {
   const params = useSearchParams();
   const router = useRouter();
@@ -89,11 +94,17 @@ export function PipelineView({
     }
     return out;
   }, [inbox]);
+  const roleCounts = useMemo(
+    () => splitTrackedRoles(applications, (row) => lifecycleStatuses[row.n] ?? []),
+    [applications, lifecycleStatuses],
+  );
 
   const filtered = useMemo(() => {
     if (tab === "INBOX") return [];
     let rows = applications;
-    if (tab !== "ALL") rows = rows.filter((r) => canonStatus(r.status).includes(tab));
+    if (tab === "OPPORTUNITIES") rows = roleCounts.opportunities;
+    else if (tab === "APPLICATIONS") rows = roleCounts.applications;
+    else if (tab !== "ALL") rows = rows.filter((r) => canonStatus(r.status).includes(tab));
     if (minFilter != null) {
       rows = rows.filter((r) => {
         const n = scoreNum(r.score);
@@ -114,7 +125,7 @@ export function PipelineView({
       }
       return (a[sort.key] || "").localeCompare(b[sort.key] || "") * sort.dir;
     });
-  }, [applications, tab, q, sort, minFilter]);
+  }, [applications, roleCounts, tab, q, sort, minFilter]);
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-8 max-sm:pb-24">
@@ -123,7 +134,8 @@ export function PipelineView({
           <h1 className="font-display text-2xl tracking-tight text-landing">Pipeline</h1>
           <p className="mt-1 text-sm text-muted">
             <span className="tabular-nums">{pendingInbox.length}</span> in inbox ·{" "}
-            <span className="tabular-nums">{applications.length}</span> tracked
+            <span className="tabular-nums">{roleCounts.opportunities.length}</span> opportunities ·{" "}
+            <span className="tabular-nums">{roleCounts.applications.length}</span> applications
           </p>
         </div>
         {/* the tracker has its own search; the inbox brings its own facet filters */}
@@ -148,6 +160,10 @@ export function PipelineView({
               ? pendingInbox.length
               : t === "ALL"
                 ? applications.length
+                : t === "OPPORTUNITIES"
+                  ? roleCounts.opportunities.length
+                  : t === "APPLICATIONS"
+                    ? roleCounts.applications.length
                 : applications.filter((r) => canonStatus(r.status).includes(t)).length;
           return (
             <button
@@ -198,6 +214,7 @@ export function PipelineView({
           <table className="w-full min-w-[44rem] text-sm">
             <thead className="bg-surface/60 text-left text-xs uppercase tracking-wide text-faint">
               <tr>
+                <th className="whitespace-nowrap px-4 py-2.5 font-medium">kind</th>
                 {SORT_KEYS.map((k) => (
                   <th
                     key={k}
@@ -215,6 +232,7 @@ export function PipelineView({
             <tbody className="divide-y divide-border">
               {filtered.map((r, i) => (
                 <tr key={`${r.n}-${i}`} className="group transition-colors hover:bg-surface/40">
+                  <td className="px-4 py-3"><Badge tone="muted">{trackedRoleKind(r.status, lifecycleStatuses[r.n] ?? [])}</Badge></td>
                   <td className="px-4 py-3 font-medium">
                     <Link href={`/pipeline/${r.n}`} className="flex items-center gap-2.5 transition-colors group-hover:text-brand">
                       <CompanyLogo name={r.company} size={20} />
