@@ -306,6 +306,7 @@ const SYSTEM_PATHS = [
   '.grok/skills/',
   '.kimi/skills/',
   'docs/',
+  'integrations/',
   'writing-samples/README.md',
   'VERSION',
   'DATA_CONTRACT.md',
