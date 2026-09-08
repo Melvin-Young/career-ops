@@ -550,6 +550,8 @@ Zero-token portal scanner. Runs configured local parsers for SSR/static career p
 
 `scan_history.recheck_after_days` in `portals.yml` lets old `added` URLs become eligible for recheck after the configured number of days. If absent, scan-history dedup keeps the historical behavior and dedups forever. Permanent invalid statuses such as blocked host and malformed URL remain permanent.
 
+Each non-dry scan also replaces `data/scan-audit-latest.tsv` with an 8-column, sanitized TSV decision ledger (`timestamp`, `source`, `company`, `title`, `location`, `url`, `disposition`, `detail`). It records accepted postings, every filter and dedupe outcome, liveness outcomes, and source-level empty/error/WebSearch-handoff rows. `--dry-run` leaves this file untouched, just like the pipeline and scan history.
+
 For custom SSR pages, configure a tracked company with `scan_method: local_parser` and a `parser` block. The parser can be written in JavaScript, Python, or any language available as a local executable. Company-specific parsers usually already know their source URL and only need to print JSON jobs to stdout:
 
 ```yaml

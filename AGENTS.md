@@ -19,7 +19,7 @@ Two layers — full list in `DATA_CONTRACT.md`:
 
 User-facing content (CV, cover letters, application emails, form answers, recruiter outreach) is generated **exclusively** from these files plus statements the user makes directly in the current conversation:
 
-- `cv.md` · `article-digest.md` · `config/profile.yml` · `modes/_profile.md` · `writing-samples/`
+- `cv.md` · `article-digest.md` · `data/career-evidence.json` · `config/profile.yml` · `modes/_profile.md` · `writing-samples/`
 - `modes/_custom.md` (procedural/style rules only — never introduces factual claims)
 - `voice-dna.md` (voice/style only — never introduces factual claims)
 - `interview-prep/story-bank.md` and `interview-prep/{company}-{role}.md` (the user's own STAR stories and prep notes — same trust level as `cv.md`; consumed by `interview` and `apply`/`match-star`)
@@ -39,6 +39,16 @@ Auto-memory at `~/.claude/projects/.../memory/` is for **behavioural steering on
 ### Where rules live
 
 Rules belong in files the harness reads automatically — `CLAUDE.md`, `CODEX.md`, `AGENTS.md`, `modes/*.md`, `MEMORY.md`. Do not create sidecar documentation that requires manual loading. Reinforcement-without-enforcement decays.
+
+## Agent skills
+
+### Issue tracker
+
+Ideas, specs, and implementation tickets are tracked in GitHub Issues at `Melvin-Young/career-ops`. No triage workflow or required labels are used. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+This repository uses a single root `CONTEXT.md` and `docs/adr/` directory. See `docs/agents/domain.md`.
 
 ## Untrusted External Content (CRITICAL)
 
@@ -78,9 +88,12 @@ AI-powered, CLI-agnostic job search automation: pipeline tracking, offer evaluat
 | File | Function |
 |------|----------|
 | `data/applications.md` | Application tracker |
+| `data/career-evidence.json` | Reviewed Career Evidence and internal market-skill signals |
+| `data/career-history.json` | Imported historical jobs and fit analyses; excluded from active counts |
 | `data/pipeline.md` | Inbox of pending URLs |
 | `data/scan-history.tsv` | Scanner dedup history |
 | `data/scan-runs.tsv` | Per-run scan counters (appended by `scan.mjs`, read by `stats.mjs`) |
+| `data/discovery-audit.tsv` | Per-scan likely/verify/excluded decisions and reasons for title-matched postings; excluded roles are auditable here but never enter the processing queue |
 | `data/follow-ups.md` | Follow-up history tracker |
 | `data/blacklist.md` | Do-not-apply companies (user layer, opt-in, never auto-populated; respected by `scan.mjs` and the `auto-pipeline`/`oferta`/`apply` gates) |
 | `data/salary-observations.tsv` | Append-only salary observation log (user layer) |
@@ -92,6 +105,8 @@ AI-powered, CLI-agnostic job search automation: pipeline tracking, offer evaluat
 | `interview-prep/story-bank.md` | Accumulated STAR+R stories |
 | `interview-prep/{company}-{role}.md` | Company-specific interview intel |
 | `generate-pdf.mjs` | Playwright: HTML to PDF |
+| `import-career-evidence.mjs` | Dry-run-first, one-way Skill_Corpus evidence/history importer |
+| `application-artifacts.mjs` | Versioned resume/cover draft, approval, resolution, and recovery lifecycle |
 | `generate-latex.mjs` | LaTeX CV validator + pdflatex compiler |
 | `scan.mjs` | Zero-token portal scanner (Greenhouse/Ashby/Lever APIs, zero LLM cost) |
 | `scan-ats-full.mjs` | Reverse-ATS keyword-first scanner over full public ATS datasets (Greenhouse/Lever/Ashby/Workday/iCIMS), filtered by portals.yml `title_filter`/`location_filter` — no company list needed; checkpoints every 500 companies, `--resume` continues an interrupted sweep |

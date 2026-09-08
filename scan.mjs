@@ -53,6 +53,7 @@ import { normalizeCompany } from './tracker-utils.mjs';
 import { normalizeCompanyName } from './invite-match.mjs';
 import { withPipelineLock } from './pipeline-lock.mjs';
 import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
+import { buildDiscoveryClassifier, DISCOVERY_LANES } from './lib/discovery-lanes.mjs';
 import { withPortalHealthLock } from './portal-health-lock.mjs';
 
 try {
@@ -66,6 +67,40 @@ try {
 
 const parseYaml = yaml.load;
 
+// Latest-run disposition audit (#1764). Unlike scan-history.tsv (which is a
+// long-lived dedup ledger), this file is deliberately replaced after every
+// non-dry run so it stays useful as an inspection surface. One row is emitted
+// for every fetched job that was filtered, deduped, accepted, or rejected by
+// liveness, plus source-level rows for empty/error/handoff outcomes.
+export const SCAN_AUDIT_HEADER = 'timestamp\tsource\tcompany\ttitle\tlocation\turl\tdisposition\tdetail\n';
+
+export function formatScanAuditRow(entry, timestamp = entry?.timestamp ?? '') {
+  return [
+    timestamp,
+    entry?.source,
+    entry?.company,
+    entry?.title,
+    entry?.location,
+    entry?.url,
+    entry?.disposition,
+    entry?.detail,
+  ].map(sanitizeTsvField).join('\t');
+}
+
+/**
+ * Replace the latest scan disposition audit. All cells go through the same
+ * formula/newline/tab sanitizer as scan-history.tsv. The explicit filePath
+ * and timestamp parameters keep this helper deterministic and safe to test.
+ */
+export function writeScanAudit(entries, filePath = SCAN_AUDIT_PATH, timestamp = new Date().toISOString()) {
+  const rows = Array.isArray(entries)
+    ? entries.map(entry => formatScanAuditRow(entry, entry?.timestamp ?? timestamp))
+    : [];
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, SCAN_AUDIT_HEADER + (rows.length > 0 ? `${rows.join('\n')}\n` : ''), 'utf-8');
+}
+
+
 // ── Config ──────────────────────────────────────────────────────────
 
 const PORTALS_PATH = process.env.CAREER_OPS_PORTALS || 'portals.yml';
@@ -77,7 +112,9 @@ const PROFILE_PATH = process.env.CAREER_OPS_PROFILE || 'config/profile.yml';
 // just untidy: scan-history.tsv IS the dedup source, so a posting surfaced in
 // lane A is silently counted as a duplicate in lane B and never shown at all.
 const SCAN_HISTORY_PATH = process.env.CAREER_OPS_SCAN_HISTORY || 'data/scan-history.tsv';
+export const SCAN_AUDIT_PATH = process.env.CAREER_OPS_SCAN_AUDIT || 'data/scan-audit-latest.tsv';
 const PIPELINE_PATH = process.env.CAREER_OPS_PIPELINE || 'data/pipeline.md';
+const DISCOVERY_AUDIT_PATH = process.env.CAREER_OPS_DISCOVERY_AUDIT || 'data/discovery-audit.tsv';
 const APPLICATIONS_PATH = 'data/applications.md';
 const PROVIDERS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'providers');
 
@@ -201,8 +238,8 @@ export function matchedTitleKeywords(title, titleFilter) {
 // ── Location filter ─────────────────────────────────────────────────
 // Optional. If `location_filter` is absent from portals.yml, all locations pass.
 // Semantics (case-insensitive substring, in this order):
-//   - Empty / whitespace-only / non-string location → pass (don't penalize
-//     missing or malformed provider data)
+//   - Empty / whitespace-only / non-string location → pass by default; reject
+//     only when the opt-in `reject_missing` flag is true
 //   - `block_hard` matches → reject (the only tier `always_allow` cannot
 //     override; for country-level terms that are never a false rejection)
 //   - `always_allow` matches → pass (takes precedence over `block` — lets a
@@ -339,6 +376,7 @@ export function titleSignalsRemote(title) {
 // location-only semantics, which is what the existing unit tests exercise.
 export function buildLocationFilter(locationFilter) {
   if (!locationFilter) return () => true;
+  const rejectMissing = locationFilter.reject_missing === true;
   const alwaysAllow = compileLocationKeywordList(locationFilter.always_allow);
   const allow = compileLocationKeywordList(locationFilter.allow);
   const block = compileLocationKeywordList(locationFilter.block);
@@ -347,8 +385,9 @@ export function buildLocationFilter(locationFilter) {
   return (location, url, title) => {
     const lower = typeof location === 'string' ? location.trim().toLowerCase() : '';
     const hint = locationHintFromUrl(url);
-    // Nothing to judge on either field → pass (don't penalize missing data).
-    if (lower === '' && hint === '') return true;
+    // Nothing to judge on either field → pass by default. A narrowly scoped
+    // personal search may opt into dropping unknowns instead.
+    if (lower === '' && hint === '') return !rejectMissing;
     const matches = (m) => (lower !== '' && m(lower)) || (hint !== '' && m(hint));
     // `block_hard` is the ONE tier always_allow cannot override. It exists because
     // a European city name can be a whole word inside a non-European location, so
@@ -1791,6 +1830,17 @@ export function formatPipelineOffer(offer) {
   // posted:, before note:, for a stable serialization.
   const trust = formatTrustSegment(offer);
   if (trust) line = `${line} | ${trust}`;
+  // Discovery classification is deterministic and zero-token. Only likely and
+  // verify offers reach the pipeline; excluded decisions live in the audit TSV.
+  // Labeled segments keep old positional readers forward-compatible.
+  const lane = ['likely', 'verify'].includes(offer.discoveryLane)
+    ? sanitizeMarkdownField(offer.discoveryLane)
+    : '';
+  const discoveryReason = typeof offer.discoveryReason === 'string'
+    ? sanitizeMarkdownField(offer.discoveryReason)
+    : '';
+  if (lane) line = `${line} | lane: ${lane}`;
+  if (lane && discoveryReason) line = `${line} | reason: ${discoveryReason}`;
   // Optional free-text ranking signal (e.g. a curated-list flag an importer
   // attaches). Labeled — not positional like location/compensation — so it can
   // ride on any row shape (bare URL, 3-, 4-, or 5-column) without a reader
@@ -1798,6 +1848,38 @@ export function formatPipelineOffer(offer) {
   // source-specific, and an offer without `note` produces byte-identical output.
   const note = typeof offer.note === 'string' ? sanitizeMarkdownField(offer.note) : '';
   return note ? `${line} | note: ${note}` : line;
+}
+
+/**
+ * One immutable, per-scan classification record. This is deliberately separate
+ * from scan-history.tsv: excluded jobs must remain auditable without becoming
+ * permanent dedup entries that a later policy change can never reconsider.
+ */
+export function formatDiscoveryAuditRow(record, runAt) {
+  const offer = record.offer || {};
+  return [
+    runAt,
+    normalizeScanUrl(offer.url),
+    offer.company || '',
+    offer.title || '',
+    offer.location || '',
+    record.decision?.lane || '',
+    (record.decision?.reasons || []).join(','),
+    record.decision?.summary || '',
+    offer.source || '',
+    postedAtIsoDate(offer.postedAt),
+  ].map(sanitizeTsvField).join('\t');
+}
+
+export async function appendDiscoveryAudit(records, runAt, auditPath = DISCOVERY_AUDIT_PATH) {
+  if (!records.length) return;
+  await withPipelineLock(auditPath, () => {
+    if (!existsSync(auditPath)) {
+      mkdirSync(path.dirname(auditPath), { recursive: true });
+      writeFileSync(auditPath, 'run_at\turl\tcompany\ttitle\tlocation\tlane\treasons\tsummary\tsource\tposted_at\n', 'utf-8');
+    }
+    appendFileSync(auditPath, records.map(record => formatDiscoveryAuditRow(record, runAt)).join('\n') + '\n', 'utf-8');
+  });
 }
 
 // postedAt arrives as epoch ms (or absent). Convert to 'YYYY-MM-DD', or '' when missing.
@@ -2450,6 +2532,15 @@ async function main() {
   }
 
   const locationFilter = buildLocationFilter(config.location_filter);
+  const discoveryClassifier = buildDiscoveryClassifier({
+    ...(config.discovery_lanes || {}),
+    // Reuse the established personal geography by default. A classifier may
+    // override either list explicitly, but the common setup has one source.
+    local_location_keywords: config.discovery_lanes?.local_location_keywords
+      ?? config.location_filter?.always_allow,
+    foreign_location_keywords: config.discovery_lanes?.foreign_location_keywords
+      ?? config.location_filter?.block,
+  });
   const postingAgeFilter = buildPostingAgeFilter(config.max_posting_age_days);
   const postedDateFilter = buildPostedDateFilter(effectiveAfter, postedBefore);
 
@@ -2470,6 +2561,25 @@ async function main() {
   let boardCount = 0;
   const resolveErrors = [];
   const agentHandoff = [];
+  const scanAuditRows = [];
+  const scanAuditTimestamp = new Date().toISOString();
+
+  // Keep the audit row shape centralized so source-level outcomes and
+  // posting-level outcomes use the same fields. Missing job fields are valid
+  // for source_error/source_empty/source_handoff rows.
+  function recordScanAudit(job, disposition, detail = '', source = '') {
+    const item = job && typeof job === 'object' ? job : {};
+    scanAuditRows.push({
+      timestamp: scanAuditTimestamp,
+      source: source || item.source || '',
+      company: item.company || item.name || '',
+      title: item.title || '',
+      location: item.location || '',
+      url: item.url || '',
+      disposition,
+      detail,
+    });
+  }
 
   /**
    * Processes a list of configuration entries, resolves their appropriate data providers,
@@ -2496,12 +2606,14 @@ async function main() {
             method: 'websearch',
             query: entry.scan_query || entry.search_query || entry.careers_url || '',
           });
+          recordScanAudit(entry, 'source_handoff', entry.scan_query || entry.search_query || entry.careers_url || '', 'websearch');
         }
         continue;
       }
 
       if (resolved.error) {
         resolveErrors.push({ company: entry.name, error: resolved.error });
+        recordScanAudit(entry, 'source_error', resolved.error, entry.provider || 'provider');
         continue;
       }
 
@@ -2553,6 +2665,7 @@ async function main() {
   let totalFilteredVisa = 0;
   let totalDupes = 0;
   const newOffers = [];
+  const discoveryAudit = [];
   const errors = [...resolveErrors];
   const emptyTargets = [];
 
@@ -2615,13 +2728,15 @@ async function main() {
           company: company.name,
           error: `local parser failed, used API fallback: ${parserErr.message}`,
         });
+        recordScanAudit(company, 'source_error', `local parser failed, used API fallback: ${parserErr.message}`, 'local-parser');
       }
       if (!Array.isArray(jobs)) {
         throw new Error(`${provider.id}: fetch() did not return an array`);
       }
       totalFound += jobs.length;
-      if (!company._isBoard && jobs.length === 0) {
-        emptyTargets.push(company.name);
+      if (jobs.length === 0) {
+        if (!company._isBoard) emptyTargets.push(company.name);
+        recordScanAudit(company, 'source_empty', 'provider returned zero jobs', sourceName);
       }
 
       for (const job of jobs) {
@@ -2640,6 +2755,7 @@ async function main() {
           if (blEntry) {
             if (!includeBlacklisted) {
               totalFilteredBlacklist++;
+              recordScanAudit(job, 'filtered_blacklist', blEntry.reason || 'company is on data/blacklist.md', sourceName);
               continue;
             }
             annotatedBlacklisted++;
@@ -2653,55 +2769,81 @@ async function main() {
 
         if (!titleFilter(job.title)) {
           totalFilteredTitle++;
+          recordScanAudit(job, 'filtered_title', 'title_filter', sourceName);
           continue;
         }
         if (classifyTier && skipTiers.includes(classifyTier(job.title))) {
           totalFilteredTier++;
+          recordScanAudit(job, 'filtered_tier', 'tier', sourceName);
           continue;
         }
-        // job.title is passed so a role whose remoteness is stated in the title
-        // ("Program Manager - Remote") isn't rejected for a city-only location.
-        if (!locationFilter(job.location, job.url, job.title)) {
-          totalFilteredLocation++;
-          continue;
+        if (discoveryClassifier.enabled) {
+          const decision = discoveryClassifier.classify(job);
+          job.discoveryLane = decision.lane;
+          job.discoveryReason = decision.summary;
+          discoveryAudit.push({ offer: { ...job, source: sourceName }, decision });
+          // Excluded roles stay in discovery-audit.tsv so policy changes and
+          // manual audits can revisit them. They never enter the pending queue.
+          if (decision.lane === DISCOVERY_LANES.EXCLUDED) {
+            totalFilteredLocation++;
+            recordScanAudit(job, 'filtered_location', decision.summary, sourceName);
+            continue;
+          }
+        } else {
+          // Legacy boolean filter when the three-lane classifier is disabled.
+          // job.title is passed so title-stated remote work can satisfy allow.
+          if (!locationFilter(job.location, job.url, job.title)) {
+            totalFilteredLocation++;
+            recordScanAudit(job, 'filtered_location', 'location_filter', sourceName);
+            continue;
+          }
         }
         if (!postingAgeFilter(job.postedAt)) {
           totalFilteredPostingAge++;
+          recordScanAudit(job, 'filtered_posting_age', 'max_posting_age_days', sourceName);
           continue;
         }
         if (!postedDateFilter(job.postedAt)) {
           totalFilteredPostedDate++;
+          recordScanAudit(job, 'filtered_posted_date', 'posted-date bound', sourceName);
           continue;
         }
         if (!salaryFilter(job.salary)) {
           totalFilteredSalary++;
+          recordScanAudit(job, 'filtered_salary', 'salary_filter', sourceName);
           continue;
         }
         if (!contentFilter(job.description, matchedTitleKeywords(job.title, config.title_filter))) {
           totalFilteredContent++;
+          recordScanAudit(job, 'filtered_content', 'content_filter', sourceName);
           continue;
         }
         if (!countryEligibilityFilter(job.description)) {
           totalFilteredCountryEligibility++;
+          recordScanAudit(job, 'filtered_country_eligibility', 'country eligibility', sourceName);
           continue;
         }
         if (!visaFilter(job.description)) {
           totalFilteredVisa++;
+          recordScanAudit(job, 'filtered_visa', 'visa policy', sourceName);
           continue;
         }
         const dedupUrl = normalizeUrlForDedup(job.url);
         if (seenUrls.has(dedupUrl)) {
           totalDupes++;
+          recordScanAudit(job, 'duplicate_url', 'URL already seen', sourceName);
           continue;
         }
         const key = companyRoleDedupKey(job.company, job.title, canonicalizeCompany);
         if (seenCompanyRoles.has(key)) {
           totalDupes++;
+          recordScanAudit(job, 'duplicate_role', 'Company and role already seen', sourceName);
           continue;
         }
         const cooldownResult = cooldownFilter(job);
         if (cooldownResult.skip) {
           totalFilteredCooldown++;
+          recordScanAudit(job, 'filtered_cooldown', 'cooldown', sourceName);
           cooldownOffers.push({
             job: { ...job, source: sourceName },
             status: cooldownResult.reason,
@@ -2728,10 +2870,15 @@ async function main() {
         error: err.message,
         kind: classifyFetchError(err),
       });
+      recordScanAudit(company, 'source_error', err.message, sourceName);
     }
   });
 
   await parallelFetch(tasks, CONCURRENCY);
+
+  if (!dryRun && discoveryClassifier.enabled) {
+    await appendDiscoveryAudit(discoveryAudit, new Date().toISOString());
+  }
 
   // 5.5. Optional liveness verification — drop expired and guard-rejected postings
   let verifiedOffers = newOffers;
@@ -2751,6 +2898,34 @@ async function main() {
     if (migratedOffers.length > 0) {
       verifiedOffers = [...verifiedOffers, ...migratedOffers];
     }
+  }
+
+  // Record the final fate of candidates that made it through the cheap
+  // posting filters. Do this after optional verification so a dry run and a
+  // real run expose the same decision vocabulary, and so expired/guarded
+  // postings are not misleadingly reported as accepted.
+  const migratedSet = new Set(migratedOffers);
+  for (const offer of verifiedOffers) {
+    if (migratedSet.has(offer)) {
+      recordScanAudit(
+        offer,
+        'accepted_migrated',
+        `liveness=migrated; previous_url=${offer.previousUrl || ''}`,
+        offer.source,
+      );
+    } else {
+      const detail = offer.blacklisted ? 'accepted with blacklist annotation' : 'passed all filters';
+      recordScanAudit(offer, 'accepted', detail, offer.source);
+    }
+  }
+  for (const offer of expiredOffers) {
+    recordScanAudit(offer, 'liveness_expired', 'posting no longer active', offer.source);
+  }
+  for (const offer of droppedOffers) {
+    recordScanAudit(offer, 'liveness_no_apply_control', 'posting page had no apply control', offer.source);
+  }
+  for (const offer of invalidOffers) {
+    recordScanAudit(offer, 'liveness_invalid', offer.code || 'invalid_url', offer.source);
   }
 
   // 5.7. Cross-listing check (#1597): fingerprint each new offer's JD body and
@@ -2813,6 +2988,12 @@ async function main() {
     }
   }
 
+  // Persist the latest disposition surface only for real scans. A dry run
+  // must leave both the pipeline and all inspection artifacts untouched.
+  if (!dryRun) {
+    writeScanAudit(scanAuditRows, SCAN_AUDIT_PATH, scanAuditTimestamp);
+  }
+
   // 7. Print summary
   console.log(`\n${'━'.repeat(45)}`);
   console.log(`Portal Scan — ${date}`);
@@ -2828,7 +3009,14 @@ async function main() {
   if (skipTiers.length > 0) {
     console.log(`Filtered by tier:      ${totalFilteredTier} removed`);
   }
-  if (config.location_filter || totalFilteredLocation > 0) {
+  if (discoveryClassifier.enabled) {
+    const laneCounts = { likely: 0, verify: 0, excluded: 0 };
+    for (const record of discoveryAudit) {
+      const lane = record.decision?.lane;
+      if (lane in laneCounts) laneCounts[lane]++;
+    }
+    console.log(`Discovery lanes:       ${laneCounts.likely} likely, ${laneCounts.verify} verify, ${laneCounts.excluded} excluded`);
+  } else if (config.location_filter || totalFilteredLocation > 0) {
     console.log(`Filtered by location:  ${totalFilteredLocation} removed`);
   }
   if (config.max_posting_age_days != null || totalFilteredPostingAge > 0) {
@@ -2994,12 +3182,14 @@ async function main() {
         ? ` [Trust: ${o.trustScore}/100${o.trustFlags?.length ? ' — ' + o.trustFlags.join(', ') : ''}]`
         : '';
       const blacklistSuffix = o.blacklisted ? ' [BLACKLISTED — on your do-not-apply list]' : '';
-      console.log(`  + ${o.company} | ${o.title} | ${o.location || 'N/A'}${trustSuffix}${blacklistSuffix}`);
+      const laneSuffix = o.discoveryLane ? ` [${o.discoveryLane.toUpperCase()}: ${o.discoveryReason}]` : '';
+      console.log(`  + ${o.company} | ${o.title} | ${o.location || 'N/A'}${laneSuffix}${trustSuffix}${blacklistSuffix}`);
     }
     if (dryRun) {
       console.log('\n(dry run — run without --dry-run to save results)');
     } else {
-      console.log(`\nResults saved to ${PIPELINE_PATH} and ${SCAN_HISTORY_PATH}`);
+      const auditSuffix = discoveryClassifier.enabled ? `; audit saved to ${DISCOVERY_AUDIT_PATH}` : '';
+      console.log(`\nResults saved to ${PIPELINE_PATH} and ${SCAN_HISTORY_PATH}${auditSuffix}`);
     }
   }
 

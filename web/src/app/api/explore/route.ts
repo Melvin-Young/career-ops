@@ -4,6 +4,8 @@ import { runDiscovery } from "@/lib/core/scan";
 import { rootScript } from "@/lib/career-ops";
 import { parseExplorePatch, DEFAULT_FILTERS, type DiscoveredOffer, type ScanEvent } from "@/lib/explore";
 import { scannerMissingBody, SCANNER_MISSING_STATUS } from "@/lib/explore-error.mjs";
+import { canon } from "@/lib/explore-ai";
+import { assembleDedupContext, knownRoleKey } from "@/lib/core/discover";
 
 // Discovery is HTTP-bound across many ATS boards; give it room. It is FREE —
 // zero LLM tokens (the scanner only does HTTP + JSON, and --dry-run writes nothing).
@@ -42,6 +44,12 @@ export async function POST(req: NextRequest) {
       let offers: DiscoveredOffer[] = [];
       try {
         offers = await runDiscovery(filters, (e: ScanEvent) => send(e));
+        const known = assembleDedupContext();
+        offers = offers.filter((offer) => {
+          const url = canon(offer.url);
+          const role = knownRoleKey(offer.company, offer.title);
+          return !(url && known.urls.has(url)) && !(role && known.roleKeys.has(role));
+        });
       } catch (err) {
         send({ kind: "error", message: err instanceof Error ? err.message : "discovery failed" } satisfies ScanEvent);
       }

@@ -32,6 +32,14 @@ test("the last JSON object wins, so a diagnostic object cannot shadow the result
   assert.deepEqual(parseCliJson(stdout), { ok: true, changed: false });
 });
 
+test("pretty-printed set-status JSON is parsed as one trailing document", () => {
+  const stdout = [
+    "warning: ledger note for {row 12}",
+    JSON.stringify({ changed: true, num: "12", newStatus: "Applied", statusLogged: true }, null, 2),
+  ].join("\n");
+  assert.deepEqual(parseCliJson(stdout), { changed: true, num: "12", newStatus: "Applied", statusLogged: true });
+});
+
 test("a plain object is required: no output, no JSON, and a bare array all read as absent", () => {
   assert.equal(parseCliJson(""), null);
   assert.equal(parseCliJson("no json at all\n"), null);

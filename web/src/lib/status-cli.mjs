@@ -13,20 +13,20 @@ const GENERIC_FAILURE = "status update failed";
  * not parse. The route then reports 500 for a write the CLI already committed,
  * losing `changed` and `statusLogged` with it.
  *
- * So the document is read from the end: the last line that parses as a plain
- * object is the result. A diagnostic that happens to be valid JSON cannot shadow
- * it, because the result is printed last.
+ * So the document is read from the end: candidate opening braces are tried
+ * right-to-left until the trailing suffix parses as one plain object. This
+ * handles both compact JSON and the CLI's normal pretty-printed multi-line
+ * output. A diagnostic object cannot shadow the result because the result is
+ * the final document.
  *
  * @param {string} stdout
  * @returns {Record<string, unknown> | null}
  */
 export function parseCliJson(stdout) {
-  const lines = String(stdout ?? "").split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line.startsWith("{")) continue;
+  const text = String(stdout ?? "").trim();
+  for (let i = text.lastIndexOf("{"); i >= 0; i = text.lastIndexOf("{", i - 1)) {
     try {
-      const parsed = JSON.parse(line);
+      const parsed = JSON.parse(text.slice(i));
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         return /** @type {Record<string, unknown>} */ (parsed);
       }

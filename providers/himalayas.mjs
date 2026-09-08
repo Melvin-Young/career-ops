@@ -2,14 +2,33 @@
 /** @typedef {import('./_types.js').Provider} Provider */
 
 // Himalayas provider - board-wide remote jobs API
-// (https://himalayas.app/jobs/api?limit=50). Returns { jobs: [...] }. The
-// full feed is fetched so scan.mjs's title_filter / location_filter can do
-// the local gating consistently with other zero-token board providers.
+// (https://himalayas.app/docs/remote-jobs-api). Returns paginated { jobs: [],
+// nextCursor? } responses. The full feed is fetched so scan.mjs's
+// title_filter / location_filter can do the local gating consistently with
+// other zero-token board providers.
 //
 // Wire in via a `job_boards:` entry with `provider: himalayas`.
 
-const FEED_URL = 'https://himalayas.app/jobs/api?limit=50';
+const FEED_BASE_URL = 'https://himalayas.app/jobs/api';
+const FEED_LIMIT = '20';
 const TRUSTED_HOST = 'himalayas.app';
+
+// Himalayas caps pages at 20 jobs and rate-limits the public endpoint. Pace
+// cursor requests so a full-board scan does not arrive as an immediate burst,
+// and retry only explicit 429s. The retry budget and Retry-After clamp keep a
+// degraded source from stalling the whole multi-source scan indefinitely.
+const INTER_PAGE_DELAY_MS = 500;
+const MAX_429_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 5_000;
+const RETRY_AFTER_MAX_MS = 30_000;
+
+/** @param {string | undefined} cursor */
+function feedUrl(cursor) {
+  const url = new URL(FEED_BASE_URL);
+  url.searchParams.set('limit', FEED_LIMIT);
+  if (cursor) url.searchParams.set('cursor', cursor);
+  return assertHimalayasUrl(url.href);
+}
 
 /** @param {string} url */
 function assertHimalayasUrl(url) {
@@ -30,6 +49,35 @@ function cleanText(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function sleep(ms, ctx) {
+  if (typeof ctx?.sleep === 'function') return ctx.sleep(ms);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryAfterMs(value) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+}
+
+async function fetchPage(ctx, url) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await ctx.fetchJson(url, { redirect: 'error' });
+    } catch (err) {
+      if (err?.status !== 429 || attempt >= MAX_429_RETRIES) throw err;
+      const serverDelay = retryAfterMs(err?.retryAfter);
+      const fallbackDelay = RETRY_BASE_DELAY_MS * 2 ** attempt;
+      await sleep(
+        serverDelay === null ? fallbackDelay : Math.min(serverDelay, RETRY_AFTER_MAX_MS),
+        ctx,
+      );
+    }
+  }
+}
+
 function cleanHimalayasUrl(value) {
   const raw = cleanText(value);
   if (!raw) return '';
@@ -46,8 +94,15 @@ function cleanHimalayasUrl(value) {
 function locationText(value) {
   if (!Array.isArray(value)) return '';
   return value
-    .filter(v => typeof v === 'string' && v.trim())
-    .map(v => v.trim())
+    .map((value) => {
+      if (typeof value === 'string') return value.trim();
+      if (!value || typeof value !== 'object') return '';
+      // Current responses use objects such as { name, alpha2, slug }; retain
+      // compatibility with the older string-only shape and prefer the human
+      // readable name when it is present.
+      return cleanText(value.name) || cleanText(value.slug) || cleanText(value.alpha2);
+    })
+    .filter(Boolean)
     .join(', ');
 }
 
@@ -71,24 +126,32 @@ export default {
   id: 'himalayas',
 
   detect(entry) {
-    return entry?.provider === 'himalayas' ? { url: FEED_URL } : null;
+    return entry?.provider === 'himalayas' ? { url: feedUrl() } : null;
   },
 
   /**
    * Fetches and normalizes postings from the Himalayas public feed.
    * @param {{ provider?: string }} entry - The job_boards entry being processed.
-   * @param {{ fetchJson: (url: string, opts?: { redirect?: 'error'|'follow'|'manual' }) => Promise<any> }} ctx - HTTP context.
+   * @param {{ fetchJson: (url: string, opts?: { redirect?: 'error'|'follow'|'manual' }) => Promise<any>, sleep?: (ms: number) => Promise<void> }} ctx - HTTP context.
    * @returns {Promise<Array<{title: string, url: string, company: string, location: string, postedAt?: number}>>}
    */
   async fetch(entry, ctx) {
-    const feedUrl = assertHimalayasUrl(FEED_URL);
     // redirect:'error' prevents SSRF via server-side redirects; combined with
-    // assertHimalayasUrl above it keeps the request pinned to himalayas.app.
-    const json = await ctx.fetchJson(feedUrl, { redirect: 'error' });
-    if (!json || !Array.isArray(json.jobs)) {
-      throw new Error(`himalayas: unexpected API response - expected { jobs: [...] }, got keys: [${json ? Object.keys(json).join(', ') : 'null'}]`);
-    }
-    return parseHimalayasResponse(json);
+    // assertHimalayasUrl above it keeps every request pinned to himalayas.app.
+    const jobs = [];
+    let cursor;
+
+    do {
+      if (cursor) await sleep(INTER_PAGE_DELAY_MS, ctx);
+      const json = await fetchPage(ctx, feedUrl(cursor));
+      if (!json || !Array.isArray(json.jobs)) {
+        throw new Error(`himalayas: unexpected API response - expected { jobs: [...] }, got keys: [${json ? Object.keys(json).join(', ') : 'null'}]`);
+      }
+      jobs.push(...parseHimalayasResponse(json));
+      cursor = cleanText(json.nextCursor) || undefined;
+    } while (cursor);
+
+    return jobs;
   },
 };
 

@@ -31,6 +31,10 @@ export function addOffersToPipeline(offers: DiscoveredOffer[]): Promise<AddResul
       // Preserve the optional per-offer signal so it survives to pipeline.md.
       // The core writer treats an empty note as absent (byte-identical output).
       note: o.note || "",
+      // Structured pay, when the source stated numbers: the core writer turns it
+      // into the positional compensation column (formatCompensation). Absent
+      // on scan offers, so their rows are unchanged.
+      ...(o.salary && typeof o.salary === "object" ? { salary: o.salary } : {}),
     }));
   if (clean.length === 0) return Promise.resolve({ added: 0 });
 
@@ -75,8 +79,18 @@ process.stdin.on("end", async () => {
     child.stderr.on("data", (d: Buffer) => (err += d.toString()));
     child.on("error", (e) => resolve({ added: 0, error: e instanceof Error ? e.message : "spawn failed" }));
     child.on("close", () => {
+      // An empty stdout is not a result. The child prints exactly one JSON
+      // document on success or on a caught error; nothing at all means it
+      // crashed before its handlers ran (a missing module, say), and the only
+      // account of that is stderr — which used to be dropped here, so a
+      // crashed writer reported `added: 0` with no error and the UI said
+      // "nothing was saved" without a reason.
+      if (!out.trim()) {
+        resolve({ added: 0, error: err.trim().split("\n").find((l) => /error/i.test(l))?.slice(0, 200) || err.trim().slice(0, 200) || "writer returned no result" });
+        return;
+      }
       try {
-        const parsed = JSON.parse(out.trim() || "{}") as AddResult;
+        const parsed = JSON.parse(out.trim()) as AddResult;
         resolve({ added: parsed.added ?? 0, error: parsed.error });
       } catch {
         resolve({ added: 0, error: err.trim().slice(0, 200) || "writer returned no result" });

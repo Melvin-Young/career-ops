@@ -5,6 +5,7 @@ import { parseApplications } from "@/lib/tracker-table.mjs";
 // One definition of the `{n}-RESERVED.md` convention, shared with
 // run-cli-support.mjs — see report-files.mjs for why it lives there.
 import { isReservedReportFile } from "@/lib/report-files.mjs";
+import { parsePipelineInbox } from "@/lib/pipeline-inbox.mjs";
 
 /**
  * Resolve the career-ops "home" — the directory holding the user's sibling
@@ -48,53 +49,19 @@ function read(rel: string): string | null {
   }
 }
 
-export type InboxJob = { url: string; company: string; role: string; location?: string; compensation?: string; done: boolean; postedAt?: string };
-
-/** A pipeline-row segment like `posted: 2026-07-14`, `trust: 62 stale` or
- *  `note: …` — the core appends these LABELED segments after whatever
- *  positional shape a row has (3/4/5 columns), so a naive positional reader
- *  would misread them as location/compensation on short rows. Any
- *  `word:`-prefixed segment is treated as labeled (forward-compatible with
- *  labels the core hasn't invented yet). */
-const LABELED_SEGMENT = /^([a-z][a-z_-]*):\s*(.*)$/i;
+export type DiscoveryLane = "likely" | "verify";
+export type InboxJob = { url: string; company: string; role: string; location?: string; compensation?: string; done: boolean; postedAt?: string; discoveryLane?: DiscoveryLane; discoveryReason?: string; note?: string };
 
 /** Parse data/pipeline.md — `- [ ] URL | Company | Role [| Location [| Compensation]] [| label: …]*`.
  *  Positional split for the first columns (the optional 4th `location` #1015
  *  and 5th `compensation` #1017 must NOT bleed into `role`); labeled segments
- *  (posted:/trust:/note:/…) are filtered out of positional assignment wherever
- *  they appear and surfaced when useful (posted: → postedAt). Unknown labels
+ *  (posted:/trust:/lane:/reason:/note:/…) are filtered out of positional assignment wherever
+ *  they appear and surfaced when useful. Unknown labels
  *  and further trailing columns are ignored gracefully. */
 export function readInbox(): InboxJob[] {
   const md = read("data/pipeline.md");
   if (!md) return [];
-  const jobs: InboxJob[] = [];
-  for (const line of md.split("\n")) {
-    const m = line.match(/^\s*-\s*\[([ xX])\]\s*(.+)$/);
-    if (!m) continue;
-    const all = m[2].split("|").map((s) => s.trim());
-    const labels = new Map<string, string>();
-    const parts: string[] = [];
-    for (const [i, seg] of all.entries()) {
-      // the URL cell can contain a colon-y value but is always position 0
-      const lm = i >= 3 ? seg.match(LABELED_SEGMENT) : null;
-      if (lm) labels.set(lm[1].toLowerCase(), lm[2].trim());
-      else parts.push(seg);
-    }
-    if (parts.length < 3 || !parts[0]) continue; // need at least url | company | role
-    const posted = labels.get("posted");
-    jobs.push({
-      done: m[1].toLowerCase() === "x",
-      url: parts[0],
-      company: parts[1],
-      role: parts[2],
-      location: parts[3] || undefined, // optional 4th column (#1015)
-      compensation: parts[4] || undefined, // optional 5th column (#1017); 6th+ ignored
-      // the row's own posting date (scan.mjs `posted:` label) — a more direct
-      // freshness signal than the scan-history join, which stays as fallback
-      postedAt: posted && /^\d{4}-\d{2}-\d{2}$/.test(posted) ? posted : undefined,
-    });
-  }
-  return jobs;
+  return parsePipelineInbox(md) as InboxJob[];
 }
 
 /**
@@ -135,6 +102,8 @@ export type Application = {
   pdf: string;
   report: string;
   notes: string;
+  /** Posting URL column (#1298) when the tracker has one, "" otherwise. */
+  url: string;
 };
 
 /**
@@ -148,6 +117,188 @@ export function readApplications(): Application[] {
   const md = read("data/applications.md");
   if (!md) return [];
   return parseApplications(md, careerOpsRoot());
+}
+
+export type CareerEvidenceLabel = "Demonstrated" | "Transferable" | "Unverified" | "Gap";
+
+export type CareerEvidenceItem = {
+  id: string;
+  label: CareerEvidenceLabel;
+  claim: string;
+  category?: string;
+  scope?: string;
+  signal?: string;
+  approval?: "approved" | "pending";
+  outwardEligible: boolean;
+  source: { path: string; section?: string };
+};
+
+export type CareerMarketSkill = {
+  id: string;
+  category: string;
+  skill: string;
+  mentions: number;
+  currentEvidence: string;
+  label: CareerEvidenceLabel;
+  outwardEligible: false;
+  source: { path: string; section?: string };
+};
+
+export type CareerVoiceReference = {
+  id: string;
+  title: string;
+  path: string;
+  contentHash: string;
+  importedPath: string;
+};
+
+export type CareerEvidenceStore = {
+  schemaVersion: 1;
+  sources: Array<{ kind: string; sourceRoot: string; fingerprint: string; importedAt: string }>;
+  evidence: CareerEvidenceItem[];
+  marketSkills: CareerMarketSkill[];
+  voiceReferences: CareerVoiceReference[];
+};
+
+/** Read-only Career Evidence view for the personal dashboard. A missing store
+ * is a valid empty state; malformed state is surfaced instead of silently
+ * becoming empty so a manual audit cannot overlook evidence corruption. */
+export function readCareerEvidence(): { exists: boolean; data: CareerEvidenceStore | null; error: string | null } {
+  const file = path.join(careerOpsRoot(), "data", "career-evidence.json");
+  if (!fs.existsSync(file)) return { exists: false, data: null, error: null };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as CareerEvidenceStore;
+    if (
+      parsed?.schemaVersion !== 1
+      || !Array.isArray(parsed.sources)
+      || !Array.isArray(parsed.evidence)
+      || !Array.isArray(parsed.marketSkills)
+      || !Array.isArray(parsed.voiceReferences)
+    ) throw new Error("unsupported or incomplete schema");
+    return { exists: true, data: parsed, error: null };
+  } catch (error) {
+    return { exists: true, data: null, error: error instanceof Error ? error.message : "unknown parse error" };
+  }
+}
+
+export type CareerHistoryRecord = {
+  id: string;
+  kind: "job" | "fit-analysis";
+  title: string;
+  company: string | null;
+  role: string | null;
+  captured: string | null;
+  source: { path: string; contentHash: string };
+  content: string;
+};
+
+export function readCareerHistory(): { jobs: CareerHistoryRecord[]; analyses: CareerHistoryRecord[]; error: string | null } {
+  const file = path.join(careerOpsRoot(), "data", "career-history.json");
+  if (!fs.existsSync(file)) return { jobs: [], analyses: [], error: null };
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (parsed?.schemaVersion !== 1 || !Array.isArray(parsed.jobs) || !Array.isArray(parsed.analyses)) throw new Error("unsupported or incomplete schema");
+    return { jobs: parsed.jobs, analyses: parsed.analyses, error: null };
+  } catch (error) {
+    return { jobs: [], analyses: [], error: error instanceof Error ? error.message : "unknown parse error" };
+  }
+}
+
+export type StatusHistoryEntry = { date: string; from: string; to: string; source: string; note: string };
+
+export function readStatusHistory(n: string): StatusHistoryEntry[] {
+  if (!/^\d+$/.test(n)) return [];
+  const tsv = read("data/status-log.tsv");
+  if (!tsv) return [];
+  return tsv.split(/\r?\n/).flatMap((line) => {
+    const [selector, date, from, to, source, ...note] = line.split("\t");
+    if (selector !== n || !date || !to) return [];
+    return [{ date, from: from === "-" ? "Unknown" : from, to: to === "-" ? "Unknown" : to, source: source || "unknown", note: note.join("\t") }];
+  });
+}
+
+export type RoleActivityEntry = {
+  kind: "follow-up" | "reply" | "interview" | "export";
+  date: string;
+  title: string;
+  detail: string;
+};
+
+function firstMarkdownTable(content: string): Array<Record<string, string>> {
+  const lines = content.split(/\r?\n/);
+  const start = lines.findIndex((line) => /^\s*\|.*\|\s*$/.test(line));
+  if (start < 0) return [];
+  const table: string[] = [];
+  for (const line of lines.slice(start)) {
+    if (!/^\s*\|.*\|\s*$/.test(line)) break;
+    table.push(line);
+  }
+  const split = (line: string) => line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+  const header = split(table[0] ?? "");
+  return table.slice(1).flatMap((line) => {
+    const cells = split(line);
+    if (cells.every((cell) => /^:?-+:?$/.test(cell)) || cells.length !== header.length) return [];
+    return [Object.fromEntries(header.map((name, index) => [name.toLowerCase(), cells[index]]))];
+  });
+}
+
+/** Join the personal lifecycle sources that belong in one role workspace.
+ * Missing files are normal empty states; uncertain reply matches stay out. */
+export function readRoleActivity(app: Application): RoleActivityEntry[] {
+  const activity: RoleActivityEntry[] = [];
+  const followups = read("data/follow-ups.md");
+  if (followups) {
+    for (const row of firstMarkdownTable(followups)) {
+      const appNum = row.appnum ?? row.app ?? row["app#"];
+      if (appNum !== app.n) continue;
+      activity.push({ kind: "follow-up", date: row.date ?? "", title: `${row.channel || "Follow-up"} follow-up`, detail: [row.contact, row.notes].filter(Boolean).join(" · ") });
+    }
+  }
+
+  const interviews = read("data/active-interviews.md") ?? read("active-interviews.md");
+  if (interviews) {
+    for (const row of firstMarkdownTable(interviews)) {
+      const notes = row.notes ?? "";
+      const exact = new RegExp(`#${app.n}\\s+in\\s+tracker`, "i").test(notes);
+      const namesMatch = (row.company ?? "").toLowerCase() === app.company.toLowerCase() && (row.role ?? "").toLowerCase() === app.role.toLowerCase();
+      if (!exact && !namesMatch) continue;
+      activity.push({ kind: "interview", date: row["date/time"] ?? row.date ?? "", title: [row.round, row.status].filter(Boolean).join(" · ") || "Interview", detail: [row.interviewer, notes].filter(Boolean).join(" · ") });
+    }
+  }
+
+  const replies = read("data/reply-candidates.json");
+  if (replies) {
+    try {
+      const parsed = JSON.parse(replies);
+      const items = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.candidates) ? parsed.candidates : [];
+      for (const item of items) {
+        const exact = String(item.application_num ?? item.appNum ?? "") === app.n;
+        const text = `${item.subject ?? ""} ${item.body_snippet ?? item.body ?? ""}`.toLowerCase();
+        const namesMatch = text.includes(app.company.toLowerCase()) && text.includes(app.role.toLowerCase());
+        if (!exact && !namesMatch) continue;
+        activity.push({ kind: "reply", date: String(item.date ?? item.received_at ?? ""), title: String(item.subject ?? item.signal ?? "Application reply"), detail: String(item.from ?? item.body_snippet ?? "") });
+      }
+    } catch { /* corrupt reply candidates are surfaced by reply-watch; do not guess here */ }
+  }
+
+  const outputRoot = path.join(careerOpsRoot(), "output");
+  if (fs.existsSync(outputRoot)) {
+    const prefix = `${app.n.padStart(3, "0")}-`;
+    for (const bundle of fs.readdirSync(outputRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name.startsWith(prefix))) {
+      const artifacts = path.join(outputRoot, bundle.name, "artifacts");
+      if (!fs.existsSync(artifacts)) continue;
+      for (const kind of ["resume", "cover-letter"]) {
+        const kindRoot = path.join(artifacts, kind);
+        if (!fs.existsSync(kindRoot)) continue;
+        for (const version of fs.readdirSync(kindRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
+          const pdf = path.join(kindRoot, version.name, "artifact.pdf");
+          if (!fs.existsSync(pdf)) continue;
+          activity.push({ kind: "export", date: fs.statSync(pdf).mtime.toISOString(), title: `${kind === "resume" ? "Resume" : "Cover letter"} ${version.name} exported`, detail: path.relative(careerOpsRoot(), pdf) });
+        }
+      }
+    }
+  }
+  return activity.sort((a, b) => b.date.localeCompare(a.date));
 }
 
 /**

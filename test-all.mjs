@@ -4890,6 +4890,7 @@ try {
   const badContentFilterPath = join(tmp, 'bad-content-filter.yml');
   const deadByTitleKeywordPath = join(tmp, 'dead-by-title-keyword.yml');
   const badVisaFilterPath = join(tmp, 'bad-visa-filter.yml');
+  const badDiscoveryLanesPath = join(tmp, 'bad-discovery-lanes.yml');
 
   writeFileSync(validPath, `
 title_filter:
@@ -4975,6 +4976,19 @@ tracked_companies:
     careers_url: "https://jobs.lever.co/acme"
 `, 'utf-8');
 
+  writeFileSync(badDiscoveryLanesPath, `
+title_filter:
+  positive: ["AI"]
+location_filter:
+  reject_missing: "yes"
+discovery_lanes:
+  enabled: "yes"
+  broad_title_keywords: ["Platform Engineer", "   "]
+tracked_companies:
+  - name: "Acme"
+    careers_url: "https://jobs.lever.co/acme"
+`, 'utf-8');
+
   const validResult = run(NODE, ['validate-portals.mjs', '--file', validPath]);
   if (validResult !== null && validResult.includes('0 errors')) {
     pass('validate-portals accepts a minimal valid portals file');
@@ -5036,6 +5050,13 @@ tracked_companies:
     pass('validate-portals rejects invalid visa_filter (empty keyword / non-boolean require_mention)');
   } else {
     fail('validate-portals should reject invalid visa_filter');
+  }
+
+  const badDiscoveryLanesResult = run(NODE, ['validate-portals.mjs', '--file', badDiscoveryLanesPath]);
+  if (badDiscoveryLanesResult === null) {
+    pass('validate-portals rejects invalid discovery lane and missing-location settings');
+  } else {
+    fail('validate-portals should reject invalid discovery lane settings');
   }
 
   rmSync(tmp, { recursive: true, force: true });
@@ -6493,6 +6514,45 @@ try {
     formatPipelineOffer,
     formatScanHistoryRow,
   } = await import(pathToFileURL(join(ROOT, 'scan.mjs')).href);
+  const { formatLocation: formatAshbyLocation } = await import(pathToFileURL(join(ROOT, 'providers', 'ashby.mjs')).href);
+
+  const ashbyRemoteLocation = formatAshbyLocation({
+    location: 'San Francisco',
+    isRemote: true,
+    workplaceType: 'Remote',
+    secondaryLocations: [{
+      location: 'United States',
+      address: { postalAddress: { addressCountry: 'United States' } },
+    }],
+  });
+  const ashbyOnsiteLocation = formatAshbyLocation({
+    location: 'New York',
+    isRemote: false,
+    workplaceType: 'OnSite',
+  });
+  if (
+    ashbyRemoteLocation === 'Remote · San Francisco · United States' &&
+    ashbyOnsiteLocation === 'New York'
+  ) {
+    pass('Ashby location normalization preserves remote work arrangement without relabeling on-site roles');
+  } else {
+    fail(`Ashby location normalization drifted: remote=${JSON.stringify(ashbyRemoteLocation)}, onsite=${JSON.stringify(ashbyOnsiteLocation)}`);
+  }
+
+  const strictMissingLocationFilter = buildLocationFilter({
+    reject_missing: true,
+    allow: ['remote', 'home city'],
+  });
+  if (
+    strictMissingLocationFilter('', undefined, 'AI Engineer') === false &&
+    strictMissingLocationFilter(undefined, undefined, 'AI Engineer') === false &&
+    strictMissingLocationFilter('Remote', undefined, 'AI Engineer') === true &&
+    buildLocationFilter({ allow: ['remote'] })('', undefined, 'AI Engineer') === true
+  ) {
+    pass('location_filter reject_missing drops unknown locations without changing the default');
+  } else {
+    fail('location_filter reject_missing semantics drifted');
+  }
 
   // ── posting-age filter (max_posting_age_days) ──
   // Opt-in freshness gate. `now` is injected so the boundary math is deterministic.
@@ -15833,7 +15893,13 @@ try {
   }
 
   // Scan-run persistence (#1604 PR-2): appender writes header once, one row per run.
-  const { appendScanRunSummary, SCAN_RUNS_HEADER } = await import(pathToFileURL(join(ROOT, 'scan.mjs')).href);
+  const {
+    appendScanRunSummary,
+    SCAN_RUNS_HEADER,
+    SCAN_AUDIT_HEADER,
+    formatScanAuditRow,
+    writeScanAudit,
+  } = await import(pathToFileURL(join(ROOT, 'scan.mjs')).href);
   const runsTmp = mkdtempSync(join(tmpdir(), 'scanruns-'));
   const runsFile = join(runsTmp, 'scan-runs.tsv');
   const counters = {
@@ -15856,6 +15922,56 @@ try {
     fail(`appendScanRunSummary wrong file contents: ${JSON.stringify(runRows)}`);
   }
   rmSync(runsTmp, { recursive: true, force: true });
+
+  // Latest scan audit (#1764): overwrite semantics, stable header, and TSV /
+  // spreadsheet-formula sanitization are part of the user-facing contract.
+  const auditTmp = mkdtempSync(join(tmpdir(), 'scanaudit-'));
+  const auditFile = join(auditTmp, 'scan-audit-latest.tsv');
+  const auditEntries = [
+    {
+      timestamp: '2026-07-03T14:02:11Z', source: 'greenhouse-api', company: '=Acme\tCorp',
+      title: 'Senior Engineer\nInjected', location: '@Remote', url: 'https://jobs.example/1',
+      disposition: 'filtered_title', detail: 'title_filter |\n hostile',
+    },
+    {
+      timestamp: '2026-07-03T14:02:11Z', source: 'himalayas-api', company: 'Acme',
+      title: 'Backend Engineer', location: 'Remote', url: 'https://jobs.example/2',
+      disposition: 'accepted', detail: 'passed all filters',
+    },
+  ];
+  writeScanAudit(auditEntries, auditFile, '2026-07-03T14:02:11Z');
+  const auditRows = readFileSync(auditFile, 'utf-8').trim().split('\n');
+  const auditCells = auditRows[1].split('\t');
+  if (
+    auditRows[0] === SCAN_AUDIT_HEADER.trim() &&
+    auditRows.length === 3 &&
+    auditCells.length === 8 &&
+    auditCells[0] === '2026-07-03T14:02:11Z' &&
+    auditCells[2] === "'=Acme Corp" &&
+    auditCells[3] === 'Senior Engineer Injected' &&
+    auditCells[5] === 'https://jobs.example/1' &&
+    auditCells[6] === 'filtered_title' &&
+    !auditRows[1].includes('\r') &&
+    formatScanAuditRow(auditEntries[1]).split('\t')[6] === 'accepted'
+  ) {
+    pass('scan audit writer emits an 8-column sanitized disposition row');
+  } else {
+    fail(`scan audit writer produced unsafe rows: ${JSON.stringify(auditRows)}`);
+  }
+  writeScanAudit([auditEntries[1]], auditFile, '2026-07-04T09:00:00Z');
+  const replacedAuditRows = readFileSync(auditFile, 'utf-8').trim().split('\n');
+  if (replacedAuditRows.length === 2 && replacedAuditRows[1].startsWith('2026-07-03T14:02:11Z\thimalayas-api\tAcme\tBackend Engineer')) {
+    pass('scan audit writer replaces the previous latest-run file instead of appending');
+  } else {
+    fail(`scan audit writer did not replace the previous run: ${JSON.stringify(replacedAuditRows)}`);
+  }
+  rmSync(auditTmp, { recursive: true, force: true });
+
+  if (scanScript.includes('writeScanAudit(scanAuditRows') && scanScript.includes('if (!dryRun)')) {
+    pass('scan persists the latest disposition audit only on non-dry runs');
+  } else {
+    fail('scan audit persistence is not guarded by the non-dry-run write gate');
+  }
 
   // computeRunStats: header-name parsing, torn rows skipped, failed runs
   // excluded from averages.

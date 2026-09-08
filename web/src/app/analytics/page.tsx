@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { pipelineSummary } from "@/lib/career-ops";
+import { pipelineSummary, readStatusHistory } from "@/lib/career-ops";
+import { splitTrackedRoles } from "@/lib/tracked-role";
 import { canonStatus, scoreNum } from "@/lib/format";
 import { cumulativeTiles } from "@/lib/funnel-tiles.mjs";
 
@@ -19,6 +20,10 @@ const STAGES: { key: string; label: string }[] = [
 export default function Analytics() {
   const { applications } = pipelineSummary();
   const total = applications.length;
+  const roleCounts = splitTrackedRoles(
+    applications,
+    (row) => readStatusHistory(row.n).flatMap((entry) => [entry.from, entry.to]),
+  );
 
   const stageCounts = STAGES.map((s) => ({
     ...s,
@@ -46,27 +51,19 @@ export default function Analytics() {
   // already advanced past a stage must not read 0 for it (an offer-holder was
   // told "Interviews follow replies — keep follow-ups warm"). Mirrors
   // everInterview/everOffer in stats.mjs's computeFunnel().
-  const { interviews, offers } = cumulativeTiles(applications.map((a) => canonStatus(a.status)));
+  const { interviews } = cumulativeTiles(applications.map((a) => canonStatus(a.status)));
 
   return (
     <div className="mx-auto max-w-4xl px-6 py-10">
       <h1 className="font-display text-2xl tracking-tight text-landing">Analytics</h1>
-      <p className="mt-1 text-sm text-muted">Across {total} tracked evaluations.</p>
+      <p className="mt-1 text-sm text-muted">Across {total} tracked roles, with pre-submission work separated from submitted applications.</p>
 
       {/* headline stats */}
       <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <Stat value={total} label="evaluated" />
+        <Stat value={roleCounts.opportunities.length} label="opportunities" />
+        <Stat value={roleCounts.applications.length} label="applications" />
         <Stat value={avg ? avg.toFixed(2) : "—"} label="avg score" />
-        <Stat
-          value={interviews}
-          label="interviews"
-          hint={interviews === 0 ? "Interviews follow replies — keep follow-ups warm →" : undefined}
-        />
-        <Stat
-          value={offers}
-          label="offers"
-          hint={offers === 0 ? "Offers follow interviews — keep the conversations going →" : undefined}
-        />
+        <Stat value={interviews} label="interviews" hint={interviews === 0 ? "Interviews follow replies — keep follow-ups warm →" : undefined} />
       </div>
 
       <Section title="Pipeline by stage">

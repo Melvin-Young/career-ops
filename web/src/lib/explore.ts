@@ -55,6 +55,8 @@ export type DiscoveredOffer = {
    *  writer (scan.mjs formatPipelineOffer). Generic and source-agnostic — an
    *  importer can attach a note; the deterministic scan omits it. */
   note?: string;
+  /** Structured pay for the desk's manual save; the scan never sets it. */
+  salary?: { min: number | null; max: number | null; currency: string | null };
   // ── AI-search (modes/discover.md) additions — all optional, so the
   //    deterministic scan offer is unaffected (fields simply absent). ──
   /** present ONLY on AI offers → drives the "unverified" badge. AI finds can't be

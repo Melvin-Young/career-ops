@@ -18,6 +18,7 @@ See "Untrusted External Content" in `AGENTS.md` / `CLAUDE.md` / `CODEX.md` for t
 |------|------|------|
 | cv.md | `cv.md` (project root) | ALWAYS |
 | article-digest.md | `article-digest.md` (if exists) | ALWAYS (detailed proof points) |
+| Career Evidence | `data/career-evidence.json` (if exists) | ALWAYS for candidate-facing generation; only `outwardEligible: true` facts may be used as claims. Market skills remain internal targeting context. |
 | profile.yml | `config/profile.yml` | ALWAYS (candidate identity and targets) |
 | _profile.md | `modes/_profile.md` | ALWAYS (user archetypes, narrative, negotiation) |
 | writing-samples/ | `writing-samples/` | When generating candidate-facing text — check `_profile.md` for cached `## Writing Style` first; only scan files if absent |
@@ -25,7 +26,7 @@ See "Untrusted External Content" in `AGENTS.md` / `CLAUDE.md` / `CODEX.md` for t
 | interview-prep | `interview-prep/story-bank.md`, `interview-prep/{company}-{role}.md` | When generating ATS form answers / interview content — the user's own STAR stories + prep notes (same trust as cv.md). Consumed by `apply`/`match-star` + interview modes |
 | _custom.md | `modes/_custom.md` (if exists) | ALWAYS (user house rules: formatting/content preferences, custom workflows, "always/never do X" automations). Procedural rules only — never a content source for claims |
 
-**RULE: NEVER hardcode metrics from proof points.** Read them from cv.md + article-digest.md at evaluation time.
+**RULE: NEVER hardcode metrics from proof points.** Read them from cv.md + article-digest.md + approved Career Evidence at evaluation time.
 **RULE: For article/project metrics, article-digest.md takes precedence over cv.md.**
 **RULE: Read _profile.md AFTER this file. User customizations in _profile.md override defaults here.**
 **RULE: Read _custom.md (if it exists) AFTER _profile.md and honor its house rules in every mode.** It is where the user's persistent instructions live ("use this date format", "never reorder section X", "always include Y in summaries") — an instruction recorded there is NOT optional and does not expire between sessions or between items in a batch. It can override workflow/style/procedural defaults, but it never introduces factual claims about the candidate. When the user states a lasting preference in conversation, write it to `modes/_custom.md` so it survives the session.
@@ -216,4 +217,3 @@ A mode may tell you to run work in a background subagent (e.g. `scan`, or parall
 - Working demo + metrics > perfection
 - Apply sooner > learn more
 - 80/20 approach, timebox everything
-

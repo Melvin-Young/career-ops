@@ -5,6 +5,8 @@ const nextConfig = {
   // Turbopack's postcss workers into an unbounded respawn loop that exhausts
   // all RAM (vercel/next.js#92978) — pin the root to this app.
   turbopack: { root: import.meta.dirname },
+  // The floating dev indicator sits where the desk's primary controls live on a phone.
+  devIndicators: false,
   // Allow a throwaway build dir (e.g. BUILD_DIST=.next-prod) so a production
   // `next build` can run without clobbering a live `next dev` .next.
   ...(process.env.BUILD_DIST ? { distDir: process.env.BUILD_DIST } : {}),

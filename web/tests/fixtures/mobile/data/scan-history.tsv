@@ -1,0 +1,7 @@
+url	first_seen	portal	title	company	status	location	fingerprint	posted_at	trust_score	trust_flags	normalized_company
+https://www.linkedin.example/jobs/view/4001	2026-09-07	web-save	Platform Engineer	Initrode	added	Remote, UK					initrode
+https://boards.example.test/vandelay/jobs/501	2026-09-05	web-save	Senior Platform Engineer	Vandelay Industries	added	Manchester		2026-09-05			vandelay-industries
+https://boards.example.test/vandelay/jobs/502	2026-09-06	web-save	Senior Platform Engineer, Data Platform	Vandelay Industries	added	Manchester		2026-09-06			vandelay-industries
+https://boards.example.test/acme/jobs/12345	2026-08-30	greenhouse	Senior Platform Engineer	Acme Corp	added	Manchester					acme
+https://boards.example.test/hooli/jobs/777	2026-09-01	lever	DevOps Lead	Hooli	added	London					hooli
+https://boards.example.test/stark/jobs/31	2026-09-02	ashby	Infrastructure Engineer	Stark Industries	added	Remote					stark-industries

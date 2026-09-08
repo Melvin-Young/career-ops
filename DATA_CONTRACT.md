@@ -23,6 +23,8 @@ These files contain your personal data, customizations, and work product. Update
 | `interview-prep/sessions/*.md` | Interview sessions — real transcripts + mock sessions (sensitive: real names/companies; gitignored except scaffold). Drives `patterns` Step 1b targeting signal and `interview-redflag` analysis. Scaffold files (`README.md`, `.gitkeep`) are system-owned. |
 | `documents/*` | Your profile intake sources — master CV, LinkedIn export, diplomas, reference letters (PII — gitignored except scaffold; read locally by `intake.mjs`, see `modes/intake.md`). Scaffold files (`README.md`, `.gitkeep`) are system-owned. |
 | `data/intake-state.json` | Fingerprints of already-ingested intake sources (written by `node intake.mjs --commit`; makes re-runs propose only new material — safe to delete, next intake re-proposes everything) |
+| `data/career-evidence.json` | Reviewed Career Evidence, internal market-skill signals, import provenance, and writing-reference metadata. Candidate facts retain Demonstrated/Transferable/Unverified/Gap labels; market gaps are never outward-facing claims. |
+| `data/career-history.json` | Imported historical job records and fit analyses. Historical intelligence is inspectable but excluded from active Opportunity/Application counts. |
 | `portals.yml` | Your customized company list |
 | `config/plugins.yml` | Your plugin activation toggles (opt-in; seeded from `config/plugins.example.yml`) |
 | `opencode.json` | Your OpenCode project config (MCP servers, model, formatter, LSP) — gitignored, copy `opencode.example.json` to start |
@@ -33,6 +35,9 @@ These files contain your personal data, customizations, and work product. Update
 | `data/pipeline.md` | Your URL inbox |
 | `data/scan-history.tsv` | Your scan history (tab-separated, append-only trailing columns; col 8: local SimHash JD fingerprint for cross-listing detection, col 9: posting date, cols 10-11: trust score/flags, col 12: normalized company key for repost/name matching). Older rows may have fewer columns — readers index by position and tolerate the absence. |
 | `data/scan-runs.tsv` | Your per-run scan counters (appended by `scan.mjs`, read by `stats.mjs`) |
+| `data/scan-audit-latest.tsv` | Latest scan dispositions, replaced on non-dry scans; source failures, filters, duplicates, liveness and accepted results. Override with `CAREER_OPS_SCAN_AUDIT` for isolated scans. |
+| `data/archive/*` | Recoverable snapshots of personal configuration and discovery state. |
+| `data/discovery-audit.tsv` | Append-only, per-scan classification evidence for every title-matched posting: `{run_at}\t{url}\t{company}\t{title}\t{location}\t{likely\|verify\|excluded}\t{reason_codes}\t{summary}\t{source}\t{posted_at}`. Excluded roles stay auditable here but never enter `data/pipeline.md`; changing the policy can reconsider them because this file is not a dedup source. |
 | `data/portal-health.tsv` | Consecutive reachability status for scanned portals (appended by `scan.mjs`; statuses: `reachable`, `empty`, `slug_gone`, `network`, `auth`, `server`, `unknown` — the last three joined the vocabulary later, so older files carry only the first four) |
 | `data/follow-ups.md` | Your follow-up history |
 | `data/active-interviews.md` | Your active interview processes, incl. inline `[process-friction]` notes (read by `process-quality.mjs`) |
@@ -81,6 +86,7 @@ These files contain system logic, scripts, templates, and instructions that impr
 
 | File | Purpose |
 |------|---------|
+| `CONTEXT.md` | Canonical domain vocabulary for Opportunities, Applications, Career Evidence, and Application Artifacts |
 | `modes/_shared.md` | Eval-core: scoring system, global rules, tools |
 | `modes/_writing.md` | Writing guardrails (Voice DNA / Writing Style / ATS) — loaded by the CV/cover/apply writing modes, not by evaluation (#1710) |
 | `modes/_custom.template.md` | Template seed for the user's `modes/_custom.md` |
