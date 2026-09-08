@@ -67,6 +67,40 @@ try {
 
 const parseYaml = yaml.load;
 
+// Latest-run disposition audit (#1764). Unlike scan-history.tsv (which is a
+// long-lived dedup ledger), this file is deliberately replaced after every
+// non-dry run so it stays useful as an inspection surface. One row is emitted
+// for every fetched job that was filtered, deduped, accepted, or rejected by
+// liveness, plus source-level rows for empty/error/handoff outcomes.
+export const SCAN_AUDIT_HEADER = 'timestamp\tsource\tcompany\ttitle\tlocation\turl\tdisposition\tdetail\n';
+
+export function formatScanAuditRow(entry, timestamp = entry?.timestamp ?? '') {
+  return [
+    timestamp,
+    entry?.source,
+    entry?.company,
+    entry?.title,
+    entry?.location,
+    entry?.url,
+    entry?.disposition,
+    entry?.detail,
+  ].map(sanitizeTsvField).join('\t');
+}
+
+/**
+ * Replace the latest scan disposition audit. All cells go through the same
+ * formula/newline/tab sanitizer as scan-history.tsv. The explicit filePath
+ * and timestamp parameters keep this helper deterministic and safe to test.
+ */
+export function writeScanAudit(entries, filePath = SCAN_AUDIT_PATH, timestamp = new Date().toISOString()) {
+  const rows = Array.isArray(entries)
+    ? entries.map(entry => formatScanAuditRow(entry, entry?.timestamp ?? timestamp))
+    : [];
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, SCAN_AUDIT_HEADER + (rows.length > 0 ? `${rows.join('\n')}\n` : ''), 'utf-8');
+}
+
+
 // ── Config ──────────────────────────────────────────────────────────
 
 const PORTALS_PATH = process.env.CAREER_OPS_PORTALS || 'portals.yml';
@@ -78,6 +112,7 @@ const PROFILE_PATH = process.env.CAREER_OPS_PROFILE || 'config/profile.yml';
 // just untidy: scan-history.tsv IS the dedup source, so a posting surfaced in
 // lane A is silently counted as a duplicate in lane B and never shown at all.
 const SCAN_HISTORY_PATH = process.env.CAREER_OPS_SCAN_HISTORY || 'data/scan-history.tsv';
+export const SCAN_AUDIT_PATH = process.env.CAREER_OPS_SCAN_AUDIT || 'data/scan-audit-latest.tsv';
 const PIPELINE_PATH = process.env.CAREER_OPS_PIPELINE || 'data/pipeline.md';
 const DISCOVERY_AUDIT_PATH = process.env.CAREER_OPS_DISCOVERY_AUDIT || 'data/discovery-audit.tsv';
 const APPLICATIONS_PATH = 'data/applications.md';
@@ -2526,6 +2561,25 @@ async function main() {
   let boardCount = 0;
   const resolveErrors = [];
   const agentHandoff = [];
+  const scanAuditRows = [];
+  const scanAuditTimestamp = new Date().toISOString();
+
+  // Keep the audit row shape centralized so source-level outcomes and
+  // posting-level outcomes use the same fields. Missing job fields are valid
+  // for source_error/source_empty/source_handoff rows.
+  function recordScanAudit(job, disposition, detail = '', source = '') {
+    const item = job && typeof job === 'object' ? job : {};
+    scanAuditRows.push({
+      timestamp: scanAuditTimestamp,
+      source: source || item.source || '',
+      company: item.company || item.name || '',
+      title: item.title || '',
+      location: item.location || '',
+      url: item.url || '',
+      disposition,
+      detail,
+    });
+  }
 
   /**
    * Processes a list of configuration entries, resolves their appropriate data providers,
@@ -2552,12 +2606,14 @@ async function main() {
             method: 'websearch',
             query: entry.scan_query || entry.search_query || entry.careers_url || '',
           });
+          recordScanAudit(entry, 'source_handoff', entry.scan_query || entry.search_query || entry.careers_url || '', 'websearch');
         }
         continue;
       }
 
       if (resolved.error) {
         resolveErrors.push({ company: entry.name, error: resolved.error });
+        recordScanAudit(entry, 'source_error', resolved.error, entry.provider || 'provider');
         continue;
       }
 
@@ -2672,13 +2728,15 @@ async function main() {
           company: company.name,
           error: `local parser failed, used API fallback: ${parserErr.message}`,
         });
+        recordScanAudit(company, 'source_error', `local parser failed, used API fallback: ${parserErr.message}`, 'local-parser');
       }
       if (!Array.isArray(jobs)) {
         throw new Error(`${provider.id}: fetch() did not return an array`);
       }
       totalFound += jobs.length;
-      if (!company._isBoard && jobs.length === 0) {
-        emptyTargets.push(company.name);
+      if (jobs.length === 0) {
+        if (!company._isBoard) emptyTargets.push(company.name);
+        recordScanAudit(company, 'source_empty', 'provider returned zero jobs', sourceName);
       }
 
       for (const job of jobs) {
@@ -2697,6 +2755,7 @@ async function main() {
           if (blEntry) {
             if (!includeBlacklisted) {
               totalFilteredBlacklist++;
+              recordScanAudit(job, 'filtered_blacklist', blEntry.reason || 'company is on data/blacklist.md', sourceName);
               continue;
             }
             annotatedBlacklisted++;
@@ -2710,10 +2769,12 @@ async function main() {
 
         if (!titleFilter(job.title)) {
           totalFilteredTitle++;
+          recordScanAudit(job, 'filtered_title', 'title_filter', sourceName);
           continue;
         }
         if (classifyTier && skipTiers.includes(classifyTier(job.title))) {
           totalFilteredTier++;
+          recordScanAudit(job, 'filtered_tier', 'tier', sourceName);
           continue;
         }
         if (discoveryClassifier.enabled) {
@@ -2725,6 +2786,7 @@ async function main() {
           // manual audits can revisit them. They never enter the pending queue.
           if (decision.lane === DISCOVERY_LANES.EXCLUDED) {
             totalFilteredLocation++;
+            recordScanAudit(job, 'filtered_location', decision.summary, sourceName);
             continue;
           }
         } else {
@@ -2732,46 +2794,56 @@ async function main() {
           // job.title is passed so title-stated remote work can satisfy allow.
           if (!locationFilter(job.location, job.url, job.title)) {
             totalFilteredLocation++;
+            recordScanAudit(job, 'filtered_location', 'location_filter', sourceName);
             continue;
           }
         }
         if (!postingAgeFilter(job.postedAt)) {
           totalFilteredPostingAge++;
+          recordScanAudit(job, 'filtered_posting_age', 'max_posting_age_days', sourceName);
           continue;
         }
         if (!postedDateFilter(job.postedAt)) {
           totalFilteredPostedDate++;
+          recordScanAudit(job, 'filtered_posted_date', 'posted-date bound', sourceName);
           continue;
         }
         if (!salaryFilter(job.salary)) {
           totalFilteredSalary++;
+          recordScanAudit(job, 'filtered_salary', 'salary_filter', sourceName);
           continue;
         }
         if (!contentFilter(job.description, matchedTitleKeywords(job.title, config.title_filter))) {
           totalFilteredContent++;
+          recordScanAudit(job, 'filtered_content', 'content_filter', sourceName);
           continue;
         }
         if (!countryEligibilityFilter(job.description)) {
           totalFilteredCountryEligibility++;
+          recordScanAudit(job, 'filtered_country_eligibility', 'country eligibility', sourceName);
           continue;
         }
         if (!visaFilter(job.description)) {
           totalFilteredVisa++;
+          recordScanAudit(job, 'filtered_visa', 'visa policy', sourceName);
           continue;
         }
         const dedupUrl = normalizeUrlForDedup(job.url);
         if (seenUrls.has(dedupUrl)) {
           totalDupes++;
+          recordScanAudit(job, 'duplicate_url', 'URL already seen', sourceName);
           continue;
         }
         const key = companyRoleDedupKey(job.company, job.title, canonicalizeCompany);
         if (seenCompanyRoles.has(key)) {
           totalDupes++;
+          recordScanAudit(job, 'duplicate_role', 'Company and role already seen', sourceName);
           continue;
         }
         const cooldownResult = cooldownFilter(job);
         if (cooldownResult.skip) {
           totalFilteredCooldown++;
+          recordScanAudit(job, 'filtered_cooldown', 'cooldown', sourceName);
           cooldownOffers.push({
             job: { ...job, source: sourceName },
             status: cooldownResult.reason,
@@ -2798,6 +2870,7 @@ async function main() {
         error: err.message,
         kind: classifyFetchError(err),
       });
+      recordScanAudit(company, 'source_error', err.message, sourceName);
     }
   });
 
@@ -2825,6 +2898,34 @@ async function main() {
     if (migratedOffers.length > 0) {
       verifiedOffers = [...verifiedOffers, ...migratedOffers];
     }
+  }
+
+  // Record the final fate of candidates that made it through the cheap
+  // posting filters. Do this after optional verification so a dry run and a
+  // real run expose the same decision vocabulary, and so expired/guarded
+  // postings are not misleadingly reported as accepted.
+  const migratedSet = new Set(migratedOffers);
+  for (const offer of verifiedOffers) {
+    if (migratedSet.has(offer)) {
+      recordScanAudit(
+        offer,
+        'accepted_migrated',
+        `liveness=migrated; previous_url=${offer.previousUrl || ''}`,
+        offer.source,
+      );
+    } else {
+      const detail = offer.blacklisted ? 'accepted with blacklist annotation' : 'passed all filters';
+      recordScanAudit(offer, 'accepted', detail, offer.source);
+    }
+  }
+  for (const offer of expiredOffers) {
+    recordScanAudit(offer, 'liveness_expired', 'posting no longer active', offer.source);
+  }
+  for (const offer of droppedOffers) {
+    recordScanAudit(offer, 'liveness_no_apply_control', 'posting page had no apply control', offer.source);
+  }
+  for (const offer of invalidOffers) {
+    recordScanAudit(offer, 'liveness_invalid', offer.code || 'invalid_url', offer.source);
   }
 
   // 5.7. Cross-listing check (#1597): fingerprint each new offer's JD body and
@@ -2885,6 +2986,12 @@ async function main() {
     for (const [status, group] of byStatus) {
       await appendToScanHistory(group, date, status);
     }
+  }
+
+  // Persist the latest disposition surface only for real scans. A dry run
+  // must leave both the pipeline and all inspection artifacts untouched.
+  if (!dryRun) {
+    writeScanAudit(scanAuditRows, SCAN_AUDIT_PATH, scanAuditTimestamp);
   }
 
   // 7. Print summary

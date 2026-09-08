@@ -167,6 +167,8 @@ Levels are additive — they are executed in order, and results are merged and d
 2. **Read History**: `data/scan-history.tsv` → already seen URLs
 3. **Read Dedup Sources**: `data/applications.md` + `data/pipeline.md`
 
+After a real scan, inspect `data/scan-audit-latest.tsv` for the expanded decision list. It is replaced on each non-dry run and records accepted postings plus explicit filter, dedupe, liveness, source-empty, source-error, and WebSearch-handoff dispositions. A `--dry-run` does not write or replace the audit.
+
 3.5. **Level 0 — Local Parser** (`scan.mjs`, zero-token):
    Initialize `local_parser_ok = []`.
    Prefer running `node scan.mjs` once to cover all zero-token local parsers + APIs; if executing manually, repeat the following logic.

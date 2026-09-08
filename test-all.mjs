@@ -15893,7 +15893,13 @@ try {
   }
 
   // Scan-run persistence (#1604 PR-2): appender writes header once, one row per run.
-  const { appendScanRunSummary, SCAN_RUNS_HEADER } = await import(pathToFileURL(join(ROOT, 'scan.mjs')).href);
+  const {
+    appendScanRunSummary,
+    SCAN_RUNS_HEADER,
+    SCAN_AUDIT_HEADER,
+    formatScanAuditRow,
+    writeScanAudit,
+  } = await import(pathToFileURL(join(ROOT, 'scan.mjs')).href);
   const runsTmp = mkdtempSync(join(tmpdir(), 'scanruns-'));
   const runsFile = join(runsTmp, 'scan-runs.tsv');
   const counters = {
@@ -15916,6 +15922,56 @@ try {
     fail(`appendScanRunSummary wrong file contents: ${JSON.stringify(runRows)}`);
   }
   rmSync(runsTmp, { recursive: true, force: true });
+
+  // Latest scan audit (#1764): overwrite semantics, stable header, and TSV /
+  // spreadsheet-formula sanitization are part of the user-facing contract.
+  const auditTmp = mkdtempSync(join(tmpdir(), 'scanaudit-'));
+  const auditFile = join(auditTmp, 'scan-audit-latest.tsv');
+  const auditEntries = [
+    {
+      timestamp: '2026-07-03T14:02:11Z', source: 'greenhouse-api', company: '=Acme\tCorp',
+      title: 'Senior Engineer\nInjected', location: '@Remote', url: 'https://jobs.example/1',
+      disposition: 'filtered_title', detail: 'title_filter |\n hostile',
+    },
+    {
+      timestamp: '2026-07-03T14:02:11Z', source: 'himalayas-api', company: 'Acme',
+      title: 'Backend Engineer', location: 'Remote', url: 'https://jobs.example/2',
+      disposition: 'accepted', detail: 'passed all filters',
+    },
+  ];
+  writeScanAudit(auditEntries, auditFile, '2026-07-03T14:02:11Z');
+  const auditRows = readFileSync(auditFile, 'utf-8').trim().split('\n');
+  const auditCells = auditRows[1].split('\t');
+  if (
+    auditRows[0] === SCAN_AUDIT_HEADER.trim() &&
+    auditRows.length === 3 &&
+    auditCells.length === 8 &&
+    auditCells[0] === '2026-07-03T14:02:11Z' &&
+    auditCells[2] === "'=Acme Corp" &&
+    auditCells[3] === 'Senior Engineer Injected' &&
+    auditCells[5] === 'https://jobs.example/1' &&
+    auditCells[6] === 'filtered_title' &&
+    !auditRows[1].includes('\r') &&
+    formatScanAuditRow(auditEntries[1]).split('\t')[6] === 'accepted'
+  ) {
+    pass('scan audit writer emits an 8-column sanitized disposition row');
+  } else {
+    fail(`scan audit writer produced unsafe rows: ${JSON.stringify(auditRows)}`);
+  }
+  writeScanAudit([auditEntries[1]], auditFile, '2026-07-04T09:00:00Z');
+  const replacedAuditRows = readFileSync(auditFile, 'utf-8').trim().split('\n');
+  if (replacedAuditRows.length === 2 && replacedAuditRows[1].startsWith('2026-07-03T14:02:11Z\thimalayas-api\tAcme\tBackend Engineer')) {
+    pass('scan audit writer replaces the previous latest-run file instead of appending');
+  } else {
+    fail(`scan audit writer did not replace the previous run: ${JSON.stringify(replacedAuditRows)}`);
+  }
+  rmSync(auditTmp, { recursive: true, force: true });
+
+  if (scanScript.includes('writeScanAudit(scanAuditRows') && scanScript.includes('if (!dryRun)')) {
+    pass('scan persists the latest disposition audit only on non-dry runs');
+  } else {
+    fail('scan audit persistence is not guarded by the non-dry-run write gate');
+  }
 
   // computeRunStats: header-name parsing, torn rows skipped, failed runs
   // excluded from averages.

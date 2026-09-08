@@ -14,7 +14,7 @@ try {
   else fail(`himalayas.id is ${JSON.stringify(himalayas.id)}`);
 
   const hit = himalayas.detect({ name: 'Himalayas', provider: 'himalayas' });
-  if (hit && hit.url === 'https://himalayas.app/jobs/api?limit=50') {
+  if (hit && hit.url === 'https://himalayas.app/jobs/api?limit=20') {
     pass('himalayas.detect() claims explicit provider config');
   } else {
     fail(`himalayas.detect() returned ${JSON.stringify(hit)}`);
@@ -32,7 +32,10 @@ try {
         title: '  Staff AI Engineer  ',
         companyName: ' Acme Labs ',
         companySlug: 'acme-labs',
-        locationRestrictions: ['Worldwide', 'Europe'],
+        locationRestrictions: [
+          { name: 'Worldwide', alpha2: '', slug: 'worldwide' },
+          { name: 'Europe', alpha2: '', slug: 'europe' },
+        ],
         pubDate: 1782538666,
         applicationLink: 'https://himalayas.app/companies/acme-labs/jobs/staff-ai-engineer',
         guid: 'https://himalayas.app/companies/acme-labs/jobs/staff-ai-engineer-guid',
@@ -118,23 +121,48 @@ try {
     fail('parseHimalayasResponse invalid payload should yield empty result');
   }
 
-  let capturedUrl = null;
-  let capturedOpts = null;
+  const pageOne = {
+    jobs: [sample.jobs[0]],
+    nextCursor: 'opaque/page-2?x=1',
+  };
+  const pageTwo = {
+    jobs: [sample.jobs[1]],
+  };
+  const captured = [];
+  const pageSleepCalls = [];
   const fetched = await himalayas.fetch(
     { name: 'Himalayas', provider: 'himalayas' },
-    { fetchJson: async (url, opts) => { capturedUrl = url; capturedOpts = opts; return sample; } },
+    {
+      fetchJson: async (url, opts) => {
+        captured.push({ url, opts });
+        return captured.length === 1 ? pageOne : pageTwo;
+      },
+      sleep: async (ms) => { pageSleepCalls.push(ms); },
+    },
   );
 
-  if (capturedUrl === 'https://himalayas.app/jobs/api?limit=50') {
-    pass('himalayas.fetch() requests the pinned API URL');
+  if (captured.length === 2 && captured[0].url === 'https://himalayas.app/jobs/api?limit=20') {
+    pass('himalayas.fetch() requests the first pinned API page');
   } else {
-    fail(`himalayas.fetch() requested ${JSON.stringify(capturedUrl)}`);
+    fail(`himalayas.fetch() requested pages ${JSON.stringify(captured.map(hit => hit.url))}`);
   }
 
-  if (capturedOpts && capturedOpts.redirect === 'error') {
-    pass('himalayas.fetch() passes redirect:"error" to fetchJson');
+  if (captured[1]?.url === 'https://himalayas.app/jobs/api?limit=20&cursor=opaque%2Fpage-2%3Fx%3D1') {
+    pass('himalayas.fetch() URL-encodes nextCursor and requests the next page');
   } else {
-    fail(`himalayas.fetch() should pass redirect:"error", got: ${JSON.stringify(capturedOpts)}`);
+    fail(`himalayas.fetch() requested cursor page ${JSON.stringify(captured[1]?.url)}`);
+  }
+
+  if (captured.every(hit => hit.opts?.redirect === 'error')) {
+    pass('himalayas.fetch() passes redirect:"error" to every page request');
+  } else {
+    fail(`himalayas.fetch() should pass redirect:"error" to every request, got: ${JSON.stringify(captured.map(hit => hit.opts))}`);
+  }
+
+  if (pageSleepCalls.length === 1 && pageSleepCalls[0] === 500) {
+    pass('himalayas.fetch() paces successive cursor pages');
+  } else {
+    fail(`himalayas.fetch() page pacing = ${JSON.stringify(pageSleepCalls)} (expected [500])`);
   }
 
   if (fetched[0]?.company === 'Acme Labs' && fetched[0]?.title === 'Staff AI Engineer') {
@@ -142,6 +170,82 @@ try {
   } else {
     fail(`himalayas.fetch() normalized row = ${JSON.stringify(fetched[0])}`);
   }
+
+  let retryAttempts = 0;
+  const retrySleepCalls = [];
+  const recovered = await himalayas.fetch(
+    { name: 'Himalayas', provider: 'himalayas' },
+    {
+      fetchJson: async () => {
+        retryAttempts++;
+        if (retryAttempts === 1) {
+          const err = new Error('HTTP 429 Too Many Requests');
+          err.status = 429;
+          err.retryAfter = '3';
+          throw err;
+        }
+        return { jobs: [sample.jobs[1]] };
+      },
+      sleep: async (ms) => { retrySleepCalls.push(ms); },
+    },
+  );
+
+  if (retryAttempts === 2 && recovered.length === 1) {
+    pass('himalayas.fetch() retries a 429 and recovers');
+  } else {
+    fail(`himalayas.fetch() 429 recovery attempts/jobs = ${retryAttempts}/${recovered.length}`);
+  }
+
+  if (retrySleepCalls.length === 1 && retrySleepCalls[0] === 3000) {
+    pass('himalayas.fetch() honors Retry-After for 429 backoff');
+  } else {
+    fail(`himalayas.fetch() Retry-After delay = ${JSON.stringify(retrySleepCalls)} (expected [3000])`);
+  }
+
+  let boundedAttempts = 0;
+  const boundedSleepCalls = [];
+  let boundedError = null;
+  try {
+    await himalayas.fetch(
+      { name: 'Himalayas', provider: 'himalayas' },
+      {
+        fetchJson: async () => {
+          boundedAttempts++;
+          const err = new Error('HTTP 429 Too Many Requests');
+          err.status = 429;
+          throw err;
+        },
+        sleep: async (ms) => { boundedSleepCalls.push(ms); },
+      },
+    );
+  } catch (err) {
+    boundedError = err;
+  }
+
+  if (boundedAttempts === 3 && boundedSleepCalls.length === 2 && boundedError?.status === 429) {
+    pass('himalayas.fetch() bounds persistent 429 retries to 3 total attempts');
+  } else {
+    fail(`himalayas.fetch() bounded retry result = ${JSON.stringify({ boundedAttempts, boundedSleepCalls, status: boundedError?.status })}`);
+  }
+
+  let badRequestAttempts = 0;
+  try {
+    await himalayas.fetch(
+      { name: 'Himalayas', provider: 'himalayas' },
+      {
+        fetchJson: async () => {
+          badRequestAttempts++;
+          const err = new Error('HTTP 400 Bad Request');
+          err.status = 400;
+          throw err;
+        },
+        sleep: async () => {},
+      },
+    );
+  } catch {}
+
+  if (badRequestAttempts === 1) pass('himalayas.fetch() does not retry non-429 failures');
+  else fail(`himalayas.fetch() retried HTTP 400 ${badRequestAttempts} times`);
 } catch (e) {
   fail(`himalayas provider tests crashed: ${e.message}`);
 }

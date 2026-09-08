@@ -35,6 +35,8 @@ These files contain your personal data, customizations, and work product. Update
 | `data/pipeline.md` | Your URL inbox |
 | `data/scan-history.tsv` | Your scan history (tab-separated, append-only trailing columns; col 8: local SimHash JD fingerprint for cross-listing detection, col 9: posting date, cols 10-11: trust score/flags, col 12: normalized company key for repost/name matching). Older rows may have fewer columns — readers index by position and tolerate the absence. |
 | `data/scan-runs.tsv` | Your per-run scan counters (appended by `scan.mjs`, read by `stats.mjs`) |
+| `data/scan-audit-latest.tsv` | Latest scan dispositions, replaced on non-dry scans; source failures, filters, duplicates, liveness and accepted results. Override with `CAREER_OPS_SCAN_AUDIT` for isolated scans. |
+| `data/archive/*` | Recoverable snapshots of personal configuration and discovery state. |
 | `data/discovery-audit.tsv` | Append-only, per-scan classification evidence for every title-matched posting: `{run_at}\t{url}\t{company}\t{title}\t{location}\t{likely\|verify\|excluded}\t{reason_codes}\t{summary}\t{source}\t{posted_at}`. Excluded roles stay auditable here but never enter `data/pipeline.md`; changing the policy can reconsider them because this file is not a dedup source. |
 | `data/portal-health.tsv` | Consecutive reachability status for scanned portals (appended by `scan.mjs`; statuses: `reachable`, `empty`, `slug_gone`, `network`, `auth`, `server`, `unknown` — the last three joined the vocabulary later, so older files carry only the first four) |
 | `data/follow-ups.md` | Your follow-up history |
