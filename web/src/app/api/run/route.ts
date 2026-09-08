@@ -228,7 +228,11 @@ export async function POST(req: Request) {
       // generate-pdf.mjs mid-render. 600s agent / ~200s render is ample —
       // a Chromium PDF render normally takes low tens of seconds even with a
       // cold Playwright launch.
-      const killMs = kind === "pdf" ? 600_000 : 285_000;
+      // Evaluate: a real oferta run with posting verification plus bounded web
+      // research took 4m45s to get through its inputs on 2026-09-08 and was
+      // killed by the old 285s ceiling before writing anything — twice. 720s
+      // leaves the route's 800s maxDuration ~80s to report the outcome.
+      const killMs = kind === "pdf" ? 600_000 : kind === "evaluate" ? 720_000 : 285_000;
       killer = setTimeout(() => {
         try { child.kill("SIGTERM"); } catch { /* ignore */ }
       }, killMs);
