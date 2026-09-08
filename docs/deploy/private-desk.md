@@ -45,7 +45,7 @@ ln -s "$PWD/integrations/hermes/career-ops-desk" ~/.hermes/skills/career-ops-des
 # in Telegram or the Hermes CLI:  /reload-skills
 ```
 
-Set `DESK_PUBLIC_URL` in the skill to the Tailscale name once step 2 is done so replies carry phone-openable links.
+Write the Tailscale URL to `~/.config/career-ops/desk-public-url` (one line) once step 2 is done so Hermes replies carry phone-openable links; the skill falls back to loopback when the file is absent.
 
 ## Rollback
 
