@@ -1,0 +1,114 @@
+#!/usr/bin/env node
+// STUB agent CLI for the desk's browser run. Not Claude. It stands in for the
+// `claude` binary on PATH so /api/run's worker path can be exercised end to end
+// without spending tokens or reading a real posting.
+//
+// What it proves: the web invoked the real worker interface with the selected
+// job only. It records the argv and prompt it received (CAREER_OPS_STUB_LOG),
+// then does what the evaluate prompt asks a real agent to do, through the same
+// canonical writers: reserve-report-num.mjs → reports/{num}-…md →
+// batch/tracker-additions/{num}-….tsv → merge-tracker.mjs. Its output is the
+// stream-json shape parseClaudeEvent reads.
+//
+// Failure injection: if `<root>/.stub-fail` exists it is removed and the run
+// exits 1 with an error result, so the UI's failure and retry paths can be
+// seen. Deterministic, labelled, and never used outside the fixture root.
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+
+const argv = process.argv.slice(2);
+const root = process.cwd();
+const promptIndex = argv.indexOf("-p");
+const prompt = promptIndex >= 0 ? argv[promptIndex + 1] ?? "" : "";
+const log = process.env.CAREER_OPS_STUB_LOG;
+if (log) appendFileSync(log, JSON.stringify({ at: new Date().toISOString(), cwd: root, argv, prompt }) + "\n");
+
+const emit = (obj) => process.stdout.write(JSON.stringify(obj) + "\n");
+const text = (t) => emit({ type: "stream_event", event: { type: "content_block_delta", delta: { text: t } } });
+const tool = (name) => emit({ type: "stream_event", event: { type: "content_block_start", content_block: { type: "tool_use", name } } });
+
+emit({ type: "system", subtype: "init" });
+
+const failMarker = join(root, ".stub-fail");
+if (existsSync(failMarker)) {
+  unlinkSync(failMarker);
+  text("Stub: simulated failure before writing anything.\n");
+  emit({ type: "result", subtype: "error_during_execution", is_error: true, error: "stub: simulated worker failure", usage: { input_tokens: 10, output_tokens: 2 } });
+  process.exit(1);
+}
+
+const url = prompt.match(/Posting URL:\s*(\S+)/)?.[1] ?? "";
+const today = prompt.match(/Today is (\d{4}-\d{2}-\d{2})/)?.[1] ?? new Date().toISOString().slice(0, 10);
+tool("WebFetch");
+text(`Stub: reading ${url}\n`);
+
+const pipeline = existsSync(join(root, "data", "pipeline.md")) ? readFileSync(join(root, "data", "pipeline.md"), "utf8") : "";
+const row = pipeline.split("\n").find((line) => line.includes(url));
+const parts = row ? row.replace(/^\s*-\s*\[[ xX]\]\s*/, "").split("|").map((s) => s.trim()) : [];
+const company = parts[1] || "Unknown Company";
+const role = parts[2] || "Unknown Role";
+const slug = company.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+tool("Bash");
+const num = execFileSync(process.execPath, [join(root, "reserve-report-num.mjs")], { cwd: root, encoding: "utf8" }).trim().match(/\d+/)[0];
+const score = "4.4";
+const report = `# ${num} — ${company} — ${role}
+
+**Date:** ${today}
+**Score:** ${score}/5
+**URL:** ${url}
+**PDF:** ❌
+**Legitimacy:** High Confidence
+**Verification:** unconfirmed (batch mode)
+
+## Machine Summary
+
+\`\`\`yaml
+company: "${company}"
+role: "${role}"
+score: ${score}
+legitimacy_tier: "High Confidence"
+archetype: "Platform builder"
+final_decision: "Apply"
+hard_stops: []
+soft_gaps:
+  - "Stub evaluation: gaps not analysed"
+top_strengths:
+  - "Stub evaluation: workflow library story"
+risk_level: "Low"
+confidence: "Low"
+next_action: "Stub: draft the resume"
+via: null
+company_confidential: false
+advertised_comp: null
+\`\`\`
+
+## F) Verdict (lead)
+
+Stub verdict: apply. This report was written by the fixture stub, not by an evaluation.
+
+## A) Role Summary
+
+Stub summary for ${role} at ${company}.
+
+## B) Match with CV
+
+Stub match.
+
+## G) Posting Legitimacy
+
+Stub: High Confidence.
+`;
+tool("Write");
+mkdirSync(join(root, "reports"), { recursive: true });
+const reportName = `${num}-${slug}-${today}.md`;
+writeFileSync(join(root, "reports", reportName), report);
+mkdirSync(join(root, "batch", "tracker-additions"), { recursive: true });
+const tsv = [num, today, company, role, "Evaluated", `${score}/5`, "❌", `[${num}](reports/${reportName})`, "stub evaluation", url].join("\t");
+writeFileSync(join(root, "batch", "tracker-additions", `${num}-${slug}.tsv`), tsv + "\n");
+tool("Bash");
+execFileSync(process.execPath, [join(root, "merge-tracker.mjs")], { cwd: root, encoding: "utf8" });
+text(`Stub: report ${reportName} written and merged.\n`);
+text(`VERDICT: ${score}/5 — stub evaluation for the desk fixture\n`);
+emit({ type: "result", subtype: "success", is_error: false, result: "ok", usage: { input_tokens: 120, output_tokens: 40 }, total_cost_usd: 0 });

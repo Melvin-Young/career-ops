@@ -97,7 +97,14 @@ export async function listRoleArtifacts(n: string, kindValue: unknown) {
     content: mod.readArtifactVersion(paths, kind, metadata.version).content,
   }));
   const approved = mod.resolveApprovedArtifact(paths, kind);
-  return { kind, versions, approvedVersion: approved?.metadata.version ?? null, pdfReady: Boolean(approved?.paths.pdf && fs.existsSync(approved.paths.pdf)) };
+  const pdfReady = Boolean(approved?.paths.pdf && fs.existsSync(approved.paths.pdf));
+  return {
+    kind,
+    versions,
+    approvedVersion: approved?.metadata.version ?? null,
+    pdfReady,
+    download: approved && pdfReady ? downloadLink(n, kind, approved.metadata.version) : null,
+  };
 }
 
 export async function generateRoleArtifact(n: string, kindValue: unknown, longForm: boolean) {
@@ -138,7 +145,12 @@ export async function exportRoleArtifact(n: string, kindValue: unknown) {
   const context = roleContext(n);
   const mod = await artifactModule();
   const exported = await mod.exportApprovedArtifactToPdf(pathsFor(mod, n, context), kind);
-  return { version: exported.metadata.version, download: `/api/artifacts/pdf?n=${n}&kind=${kind}` };
+  return { version: exported.metadata.version, download: downloadLink(n, kind, exported.metadata.version) };
+}
+
+/** The persistent link for an approved export, bound to the version it names. */
+export function downloadLink(n: string, kind: ArtifactKind, version: number): string {
+  return `/api/artifacts/pdf?n=${encodeURIComponent(n)}&kind=${kind}&v=${version}`;
 }
 
 export async function readRoleArtifactPdf(n: string, kindValue: unknown) {
@@ -146,6 +158,10 @@ export async function readRoleArtifactPdf(n: string, kindValue: unknown) {
   const context = roleContext(n);
   const mod = await artifactModule();
   const approved = mod.resolveApprovedArtifact(pathsFor(mod, n, context), kind);
-  if (!approved || !fs.existsSync(approved.paths.pdf)) return null;
-  return { bytes: fs.readFileSync(approved.paths.pdf), kind, version: approved.metadata.version };
+  if (!approved) return null;
+  const slug = `${context.app.company} ${context.app.role}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || n;
+  // `bytes` is null when the approved version has not been exported yet: the
+  // caller can then still tell a stale link which version is approved now.
+  const bytes = fs.existsSync(approved.paths.pdf) ? fs.readFileSync(approved.paths.pdf) : null;
+  return { bytes, kind, version: approved.metadata.version, slug };
 }

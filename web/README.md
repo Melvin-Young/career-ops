@@ -33,6 +33,41 @@ Open http://localhost:3000. The app reads the career-ops checkout it lives in
 - **Today / Analytics / CV / Config** — action queue, funnel, CV editing with
   preview, settings.
 
+## The desk (mobile-first primary journey)
+
+The primary journey is one loop: **save a job → open its packet → prepare
+(evaluate) → review and approve a resume/letter → copy answers → apply on the
+employer's site → record that you applied.** Design notes: `web/DESIGN.md`.
+
+- `/` — the desk: paste a link, pick a job. `/role/{id}` — the packet, where
+  `id` is a tracker row number or a `u-…` key derived from a saved link's URL
+  (a saved link that gains a tracker row redirects to the row).
+- Server operations live in `src/lib/roles/server.ts` (`listRoles`,
+  `resolveRole`, `previewSave`, `commitSave`, `recordApplied`,
+  `saveReviewedAnswers`) and are exposed under `/api/roles/*`. They compose the
+  core's own writers — `scan.mjs` `appendToPipeline`, `set-status.mjs`,
+  `merge-tracker.mjs`, `application-answers.mjs` — and never keep a second
+  store. A Telegram/Hermes bridge would call the same functions.
+- Approved exports download from `/api/artifacts/pdf?n=…&kind=…&v=N`; the
+  link is bound to the approved version and answers 409 when that changes.
+- Old `/pipeline` links redirect. Secondary tools live behind **More**.
+
+Browser oracle against an isolated fixture root (never your real data):
+
+```bash
+node web/tests/fixtures/build-mobile-root.mjs /tmp/desk-root
+cd web && CAREER_OPS_ROOT=/tmp/desk-root CAREER_OPS_STUB_LOG=/tmp/desk-stub.log \
+  PATH="$PWD/tests/fixtures/stub-cli:$PATH" npx next dev --hostname 127.0.0.1 --port 3111
+# in another shell
+CAREER_OPS_STUB_LOG=/tmp/desk-stub.log node web/tests/browser/mobile-journey.mjs \
+  --base http://127.0.0.1:3111 --root /tmp/desk-root --out /tmp/desk-shots
+```
+
+`tests/fixtures/stub-cli/claude` is a labelled stub that stands in for the
+agent CLI: it records the argv/prompt it received and writes a report through
+the canonical scripts, so the run proves the worker interface without spending
+tokens. It is not an evaluation.
+
 ## Safety
 
 - **Local-first:** the local web app runs entirely on your machine — no cloud,

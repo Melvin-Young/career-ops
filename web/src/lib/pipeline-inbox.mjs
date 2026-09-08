@@ -31,6 +31,7 @@ export function parsePipelineInbox(markdown) {
       postedAt: posted && /^\d{4}-\d{2}-\d{2}$/.test(posted) ? posted : undefined,
       discoveryLane,
       discoveryReason: discoveryLane ? labels.get('reason') || undefined : undefined,
+      ...(labels.has('note') && labels.get('note') ? { note: labels.get('note') } : {}),
     });
   }
   return jobs;

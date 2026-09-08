@@ -50,7 +50,7 @@ function read(rel: string): string | null {
 }
 
 export type DiscoveryLane = "likely" | "verify";
-export type InboxJob = { url: string; company: string; role: string; location?: string; compensation?: string; done: boolean; postedAt?: string; discoveryLane?: DiscoveryLane; discoveryReason?: string };
+export type InboxJob = { url: string; company: string; role: string; location?: string; compensation?: string; done: boolean; postedAt?: string; discoveryLane?: DiscoveryLane; discoveryReason?: string; note?: string };
 
 /** Parse data/pipeline.md — `- [ ] URL | Company | Role [| Location [| Compensation]] [| label: …]*`.
  *  Positional split for the first columns (the optional 4th `location` #1015
@@ -102,6 +102,8 @@ export type Application = {
   pdf: string;
   report: string;
   notes: string;
+  /** Posting URL column (#1298) when the tracker has one, "" otherwise. */
+  url: string;
 };
 
 /**

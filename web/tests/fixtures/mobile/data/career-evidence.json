@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    { "kind": "fixture", "sourceRoot": "web/tests/fixtures/mobile", "fingerprint": "fixture", "importedAt": "2026-09-01T00:00:00.000Z" }
+  ],
+  "evidence": [
+    {
+      "id": "evidence-fixture-0001",
+      "label": "Demonstrated",
+      "claim": "Designed a reusable CI workflow library adopted by 14 product teams, taking deploy lead time from 45 to 14 minutes",
+      "scope": "Platform delivery",
+      "signal": "CI/CD, developer experience",
+      "source": { "path": "cv.md", "section": "Experience" },
+      "approval": "approved",
+      "outwardEligible": true
+    },
+    {
+      "id": "evidence-fixture-0002",
+      "label": "Demonstrated",
+      "claim": "Ran a Kubernetes platform on EKS serving 40 microservices at 99.95% availability over three years",
+      "scope": "Reliability",
+      "signal": "Kubernetes, SLOs",
+      "source": { "path": "cv.md", "section": "Experience" },
+      "approval": "approved",
+      "outwardEligible": true
+    },
+    {
+      "id": "evidence-fixture-0003",
+      "label": "Demonstrated",
+      "claim": "Led the migration of more than 200 repositories to trunk-based development, cutting change-failure rate by 31%",
+      "scope": "Engineering process",
+      "signal": "Migration leadership",
+      "source": { "path": "cv.md", "section": "Experience" },
+      "approval": "approved",
+      "outwardEligible": true
+    },
+    {
+      "id": "evidence-fixture-0004",
+      "label": "Transferable",
+      "claim": "Familiar with cost dashboards from a side project",
+      "scope": "FinOps",
+      "signal": "Not outward eligible",
+      "source": { "path": "notes.md" },
+      "approval": "pending",
+      "outwardEligible": false
+    }
+  ],
+  "marketSkills": [],
+  "voiceReferences": []
+}
