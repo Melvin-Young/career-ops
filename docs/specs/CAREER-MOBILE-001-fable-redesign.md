@@ -19,7 +19,7 @@ The user explicitly rejects the current UI and authorizes replacing its shell, n
 
 ## Authoritative context
 
-Repository root on this Mac: `/Users/melvinyoung/orca/workspaces/career-ops/siren`.
+Repository root on this Mac: `~/orca/workspaces/career-ops/siren`.
 
 Read before implementation:
 
@@ -27,7 +27,7 @@ Read before implementation:
 - `docs/adr/0001-career-ops-owns-career-evidence.md` and `docs/adr/0002-application-artifacts-are-versioned-derivatives.md`.
 - Existing umbrella [issue #1](https://github.com/Melvin-Young/career-ops/issues/1), with role/artifact work tracked in #3–#7. Those issues remain open; their status is not proof that the code is absent.
 - `reports/mobile-audit-2026-09-08/audit.md` and its screenshots, when available locally. These diagnose the old design, not a visual target to preserve.
-- `/Users/melvinyoung/.codex/skills/career-mobile/SKILL.md` for the shared conversational workflow; the repository owns factual and lifecycle rules.
+- `~/.codex/skills/career-mobile/SKILL.md` for the shared conversational workflow; the repository owns factual and lifecycle rules.
 
 Explicit amendment to issue #1: its limitation against redesigning outside the Application Workspace is superseded by this user-approved visual replacement. Its canonical-data and approved-artifact decisions remain controlling. Existing utility capabilities may move into secondary navigation; do not silently remove their underlying functionality.
 
@@ -39,8 +39,8 @@ Fable is the single art-direction owner. Choose the visual thesis, palette, type
 
 Load these sources directly; slash-command availability is not assumed:
 
-1. `/Users/melvinyoung/.agents/skills/frontend-design/SKILL.md` — primary art-direction process. Before coding, write a compact plan with 4–6 named color tokens, type roles, spacing/shape/motion rules, and mobile/desktop layout sketches. Critique it for generic defaults and revise before implementation.
-2. `/Users/melvinyoung/.agents/skills/design-library/SKILL.md` and its `INDEX.md` — router for `/Users/melvinyoung/Development/mengto-skills`. Use selected techniques, not the entire library.
+1. `~/.agents/skills/frontend-design/SKILL.md` — primary art-direction process. Before coding, write a compact plan with 4–6 named color tokens, type roles, spacing/shape/motion rules, and mobile/desktop layout sketches. Critique it for generic defaults and revise before implementation.
+2. `~/.agents/skills/design-library/SKILL.md` and its `INDEX.md` — router for `~/Development/mengto-skills`. Use selected techniques, not the entire library.
 3. MengTo `agent-skills/web-design/tailwindcss/SKILL.md` — responsive composition and implementation guidance. Installed project versions/configuration take precedence over generic examples.
 4. MengTo `agent-skills/ui/no-ai-design-slop/SKILL.md` and relevant `ARTICLE.md` sections — quality gate preserving the new visual thesis. Load a further surface/motion skill only if the chosen design needs it; record why. No shader, glass, marquee or cinematic effect is required merely because it exists in the folder.
 
