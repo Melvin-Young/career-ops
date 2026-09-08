@@ -68,7 +68,7 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
       const arr = raw ? JSON.parse(raw) : null;
       if (Array.isArray(arr)) {
         // anything left "running" from a previous session is stale → mark interrupted
-        setJobs(arr.map((j: Job) => (j.status === "running" ? { ...j, status: "error", steps: [...(j.steps || []), { kind: "status", label: "Interrupted (page reloaded)", ts: Date.now() }] } : j)));
+        setJobs(arr.map((j: Job) => (j.status === "running" ? { ...j, status: "error", steps: [...(j.steps || []), { kind: "status", label: "Connection dropped — the run kept going on your Mac; refresh this page in a few minutes to see the result", ts: Date.now() }] } : j)));
       }
     } catch {
       /* ignore */
@@ -202,7 +202,7 @@ export function JobsProvider({ children }: { children: React.ReactNode }) {
           }
           finish("done", "Done");
         } catch {
-          finish("error", "Connection error");
+          finish("error", "Connection dropped — the run kept going on your Mac; refresh this page in a few minutes to see the result");
         }
       })();
 

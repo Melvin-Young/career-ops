@@ -3,6 +3,7 @@
 // on it, #2085), while the PDF render is a plain Node child process with no CLI
 // sandbox in the way (#2172) and so passes `spawn` itself to renderAndMarkPdf.
 import { spawn } from "node:child_process";
+import { claimInflight, inflightMessage } from "@/lib/run-inflight.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveCli } from "@/lib/clis";
@@ -18,6 +19,10 @@ import { acquireTrackerWrite, releaseTrackerWrite } from "@/lib/core/run-registr
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// One entry per running evaluate/pdf run, keyed by kind+input, for the life of
+// this server process. See run-inflight.mjs for why a second start is refused.
+const RUN_INFLIGHT = new Map<string, { startedAt: number }>();
+
 export const maxDuration = 800; // a real oferta evaluation / pdf-mode CV tailoring + render is heavy and multi-step
 
 export async function POST(req: Request) {
@@ -137,6 +142,16 @@ export async function POST(req: Request) {
   const reportsBefore = persists ? reportEntries() : [];
   // Tracker-mutating runs hold a write token so a row delete can't race their merge
   // (tracker.mjs delete doesn't yet share a lock with merge-tracker — see run-registry).
+  // Refuse a duplicate start of a persisting run. The phone's "Try again" after
+  // a dropped connection lands here while the first run is still going.
+  const claim = kind === "evaluate" || kind === "pdf" ? claimInflight(RUN_INFLIGHT, kind, input) : { ok: true as const, release() {} };
+  if (!claim.ok) {
+    return new Response(JSON.stringify({ error: inflightMessage(claim.startedAt), running: true, startedAt: claim.startedAt }), {
+      status: 409,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  const releaseClaim: () => void = claim.release ?? (() => {});
   const writeToken = kind === "evaluate" || kind === "pdf" ? acquireTrackerWrite() : null;
 
   // stdin must reach EOF or the CLI waits on piped input that never comes: Codex's
@@ -164,6 +179,13 @@ export async function POST(req: Request) {
   // otherwise a late enqueue onto a closed controller throws uncaught (see #1155).
   let closed = false;
   let killer: ReturnType<typeof setTimeout> | undefined;
+  // The client (a phone tab, usually) went away. The child is NOT killed for
+  // that: an evaluation or CV tailoring is minutes of real work whose result
+  // lands in files the desk reads on the next page load, so a backgrounded
+  // Safari tab must not throw it away. Sends become no-ops; the kill timer
+  // stays as the only ceiling; close() still runs when the child exits.
+  let clientGone = false;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
   // pdf-kind's render+mark work (renderPdf, below) keeps running detached even
   // after the agent child closes — and even after a client disconnect fires
   // cancel(). Track its promise so cancel() can defer releasing writeToken
@@ -176,6 +198,7 @@ export async function POST(req: Request) {
       writeTokenReleased = true;
       releaseTrackerWrite(writeToken);
     }
+    releaseClaim();
   };
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -209,19 +232,16 @@ export async function POST(req: Request) {
       killer = setTimeout(() => {
         try { child.kill("SIGTERM"); } catch { /* ignore */ }
       }, killMs);
-      // Declared before send() so send() can clear it the moment it sees the
-      // client disconnect; assigned just below, once close() exists.
-      let heartbeat: ReturnType<typeof setInterval> | undefined;
       const send = (obj: unknown) => {
-        if (closed) return;
+        if (closed || clientGone) return;
         try {
           controller.enqueue(enc.encode(JSON.stringify(obj) + "\n"));
         } catch {
           // The client is gone. Stop the heartbeat here rather than waiting for
           // close(): the child can still run for minutes (maxDuration 800s), and
           // a user retrying a failed run would otherwise accumulate one live
-          // timer per abandoned request.
-          closed = true;
+          // timer per abandoned request. The child itself keeps running.
+          clientGone = true;
           if (heartbeat) clearInterval(heartbeat);
         }
       };
@@ -459,17 +479,13 @@ export async function POST(req: Request) {
       });
     },
     cancel() {
-      closed = true;
-      if (killer) clearTimeout(killer);
-      try { child.kill("SIGTERM"); } catch { /* ignore */ }
-      if (pdfRenderPromise) {
-        // Render/mark keeps running after this client disconnects — wait for
-        // it to settle before releasing the guard, so a concurrent tracker
-        // delete can't race mark-pdf-ready.mjs's still-in-flight write.
-        pdfRenderPromise.finally(releaseWriteTokenOnce);
-      } else {
-        releaseWriteTokenOnce();
-      }
+      // Client disconnect (phone tab backgrounded, proxy timeout, navigation).
+      // Detach, don't kill: the child finishes, its 'close' handler runs the
+      // normal outcome path with sends as no-ops, and close() releases the
+      // write token and the in-flight claim then. The kill timer is untouched,
+      // so a hung child still has the same ceiling as before.
+      clientGone = true;
+      if (heartbeat) clearInterval(heartbeat);
     },
   });
 
